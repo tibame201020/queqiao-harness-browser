@@ -1,0 +1,342 @@
+{
+  "name": "@tibame201020/queqiao-harness-browser",
+  "version": "0.2.0",
+  "description": "Browser harness runtime extension for Queqiao",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:package",
+    "prepack": "npm run check",
+    "test:package": "node scripts/check-package-import.mjs",
+    "dev:stage": "npm run build && node scripts/prepare-local-install.mjs"
+  },
+  "engines": {
+    "node": ">=22.19 <25"
+  },
+  "dependencies": {
+    "playwright-core": "^1.55.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@tibame201020/queqiao": "0.9.13",
+    "@types/node": "^24.10.0",
+    "typescript": "7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "queqiao": {
+    "apiVersion": 1,
+    "module": "./dist/index.js",
+    "manifest": {
+      "id": "dev.queqiao.harness-browser",
+      "version": "0.2.0",
+      "displayName": "Queqiao Harness Browser",
+      "host": {
+        "kind": "worker"
+      },
+      "ordering": {
+        "requires": [],
+        "before": [],
+        "after": []
+      },
+      "contributions": [
+        {
+          "operation": "register",
+          "tool": "harness_init",
+          "visibility": "public",
+          "title": "Initialize browser harness",
+          "description": "Create or update a local browser harness profile. Site-specific behavior is selected by the profile adapter.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "config": {}
+            },
+            "required": [
+              "workspaceId",
+              "config"
+            ]
+          },
+          "requiredCapabilities": [],
+          "risk": "execute",
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": false,
+            "openWorldHint": false,
+            "idempotentHint": true
+          }
+        },
+        {
+          "operation": "register",
+          "tool": "harness_list",
+          "visibility": "public",
+          "title": "List browser harness profiles",
+          "description": "List locally configured browser harness profiles.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "workspaceId"
+            ]
+          },
+          "requiredCapabilities": [],
+          "risk": "read",
+          "annotations": {
+            "readOnlyHint": true,
+            "destructiveHint": false,
+            "openWorldHint": false,
+            "idempotentHint": true
+          }
+        },
+        {
+          "operation": "register",
+          "tool": "harness_bootstrap",
+          "visibility": "public",
+          "title": "Bootstrap browser harness login",
+          "description": "Open or close a headed managed browser profile for one-time login/bootstrap.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9._-]+$"
+              },
+              "operation": {
+                "default": "open",
+                "type": "string",
+                "enum": [
+                  "open",
+                  "close"
+                ]
+              }
+            },
+            "required": [
+              "workspaceId",
+              "name"
+            ]
+          },
+          "requiredCapabilities": [],
+          "risk": "execute",
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": false,
+            "openWorldHint": true,
+            "idempotentHint": false
+          }
+        },
+        {
+          "operation": "register",
+          "tool": "harness_run",
+          "visibility": "public",
+          "title": "Run browser harness action",
+          "description": "Run one adapter action using the configured browser harness profile. Adapter arguments are passed through the args object.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9._-]+$"
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "args": {},
+              "force": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "workspaceId",
+              "name"
+            ]
+          },
+          "requiredCapabilities": [],
+          "risk": "execute",
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": true,
+            "openWorldHint": true,
+            "idempotentHint": false
+          }
+        },
+        {
+          "operation": "register",
+          "tool": "harness_start",
+          "visibility": "public",
+          "title": "Start browser harness supervisor",
+          "description": "Start the configured interval supervisor as a local background process.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9._-]+$"
+              }
+            },
+            "required": [
+              "workspaceId",
+              "name"
+            ]
+          },
+          "requiredCapabilities": [],
+          "risk": "execute",
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": false,
+            "openWorldHint": true,
+            "idempotentHint": true
+          }
+        },
+        {
+          "operation": "register",
+          "tool": "harness_stop",
+          "visibility": "public",
+          "title": "Stop browser harness supervisor",
+          "description": "Stop a local browser harness interval supervisor without deleting its profile.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9._-]+$"
+              }
+            },
+            "required": [
+              "workspaceId",
+              "name"
+            ]
+          },
+          "requiredCapabilities": [],
+          "risk": "execute",
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": false,
+            "openWorldHint": false,
+            "idempotentHint": true
+          }
+        },
+        {
+          "operation": "register",
+          "tool": "harness_status",
+          "visibility": "public",
+          "title": "Read browser harness status",
+          "description": "Read configuration and runtime state for one browser harness profile.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9._-]+$"
+              }
+            },
+            "required": [
+              "workspaceId",
+              "name"
+            ]
+          },
+          "requiredCapabilities": [],
+          "risk": "read",
+          "annotations": {
+            "readOnlyHint": true,
+            "destructiveHint": false,
+            "openWorldHint": false,
+            "idempotentHint": true
+          }
+        }
+      ],
+      "runtime": {
+        "processes": {
+          "allow": [
+            "node"
+          ]
+        },
+        "outboundHttp": {
+          "allowOrigins": []
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tibame201020/queqiao-harness-browser.git"
+  },
+  "homepage": "https://github.com/tibame201020/queqiao-harness-browser#readme",
+  "bugs": {
+    "url": "https://github.com/tibame201020/queqiao-harness-browser/issues"
+  }
+}
