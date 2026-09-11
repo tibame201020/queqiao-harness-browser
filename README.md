@@ -14,7 +14,8 @@ Chromium-family browsers are supported today (`chrome`, `edge`, `brave`, `chromi
 
 | Tool | Purpose |
 |---|---|
-| `harness_init` | Create/update a profile |
+| `harness_execute` | Preferred LLM-facing entrypoint: validate/compile/execute a resolved script |
+| `harness_init` | Low-level create/update a profile |
 | `harness_list` | List profiles |
 | `harness_bootstrap` | Open/close a headed profile for first login/MFA |
 | `harness_run` | Run one adapter action |
@@ -23,6 +24,46 @@ Chromium-family browsers are supported today (`chrome`, `edge`, `brave`, `chromi
 | `harness_stop` | Stop supervisor without deleting profile/login state |
 
 Runtime data is stored outside the repository. Browser profiles, cookies, tokens, user project names and conversation IDs must never be committed.
+
+## Execution script contract
+
+`harness_execute` is the planner-facing contract. The LLM may reason or clarify with the user however it chooses; the harness only accepts a fully resolved script. It does not implement a questionnaire or natural-language planner. Invalid scripts return a machine-readable `rejected` result (`SCRIPT_INVALID`, `SCRIPT_UNSUPPORTED`, or `SCRIPT_AUTH_REQUIRED`).
+
+One-shot executions reuse an adapter-level browser identity so changing a prompt does not force a new login profile. Interval executions require a stable `execution.id`; executing a new interval script with the same id replaces the running supervisor so the new script takes effect immediately.
+
+Generic one-shot:
+
+```json
+{
+  "version": "1",
+  "execution": { "mode": "once" },
+  "task": {
+    "adapter": "generic",
+    "action": "open",
+    "input": { "url": "https://example.com" }
+  }
+}
+```
+
+ChatGPT Project trigger:
+
+```json
+{
+  "version": "1",
+  "execution": { "mode": "once" },
+  "task": {
+    "adapter": "chatgpt",
+    "action": "trigger",
+    "target": {
+      "project": { "mode": "existing", "name": "Example Project" },
+      "conversation": { "mode": "new" }
+    },
+    "input": { "prompt": "Run one round." }
+  }
+}
+```
+
+For `chatgpt.cleanup` with `input.apply=true`, the script must also include `"authorization": { "destructive": true }`. Cleanup remains one-shot only.
 
 ## Browser lifecycle
 

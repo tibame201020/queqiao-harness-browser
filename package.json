@@ -1,6 +1,6 @@
 {
   "name": "@tibame201020/queqiao-harness-browser",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Browser harness runtime extension for Queqiao",
   "type": "module",
   "main": "./dist/index.js",
@@ -49,7 +49,7 @@
     "module": "./dist/index.js",
     "manifest": {
       "id": "dev.queqiao.harness-browser",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "displayName": "Queqiao Harness Browser",
       "host": {
         "kind": "worker"
@@ -60,6 +60,37 @@
         "after": []
       },
       "contributions": [
+        {
+          "operation": "register",
+          "tool": "harness_execute",
+          "visibility": "public",
+          "title": "Execute resolved browser script",
+          "description": "Validate and execute a fully resolved browser execution script. Invalid or unsupported scripts are rejected deterministically for planner repair.",
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "script": {}
+            },
+            "required": [
+              "workspaceId",
+              "script"
+            ]
+          },
+          "requiredCapabilities": [],
+          "risk": "execute",
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": true,
+            "openWorldHint": true,
+            "idempotentHint": false
+          }
+        },
         {
           "operation": "register",
           "tool": "harness_init",
