@@ -8,6 +8,7 @@ import { openBrowserSession } from "./core/session.js";
 import { defaultHarnessHome, listProfiles, loadConfig, profilePaths, saveConfig } from "./core/store.js";
 import { nextSupervisorDecision } from "./core/supervisor.js";
 import { executeRunLifecycle } from "./core/run-lifecycle.js";
+import { executeExecutionScript } from "./core/execution-script-runtime.js";
 import { AdapterRegistry } from "./adapters/registry.js";
 import { genericAdapter } from "./adapters/generic.js";
 import { chatgptAdapter } from "./adapters/chatgpt-adapter.js";
@@ -65,6 +66,37 @@ async function supervisor(name: string): Promise<void> {
   } finally { await writeState(name, { supervisorStatus: "STOPPED", supervisorPid: null, nextRunAt: null }); await fsp.rm(paths.supervisorPid, { force: true }); await fsp.rm(paths.stopFlag, { force: true }); }
 }
 
+async function startSupervisor(name: string) {
+  const config = await loadConfig(home, name);
+  if (config.schedule.type !== "interval") throw new Error("harness_start requires interval schedule");
+  const paths = profilePaths(home, name);
+  if (fs.existsSync(paths.supervisorPid)) {
+    const pid = Number((await fsp.readFile(paths.supervisorPid, "utf8")).trim());
+    if (pid && pidAlive(pid)) return { status: "already-running", pid };
+  }
+  await fsp.rm(paths.stopFlag, { force: true });
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "supervisor", Buffer.from(JSON.stringify({ name })).toString("base64url")], { detached: true, stdio: "ignore" });
+  child.unref();
+  return { status: "started", pid: child.pid };
+}
+
+async function stopSupervisor(name: string) {
+  const paths = profilePaths(home, name);
+  await fsp.mkdir(paths.root, { recursive: true });
+  let pid = 0;
+  try { pid = Number((await fsp.readFile(paths.supervisorPid, "utf8")).trim()); } catch {}
+  if (!pid || !pidAlive(pid)) {
+    await fsp.rm(paths.stopFlag, { force: true });
+    await fsp.rm(paths.supervisorPid, { force: true });
+    return { status: "stopped", pid: null };
+  }
+  await fsp.writeFile(paths.stopFlag, "stop\n", "utf8");
+  const end = Date.now() + 5000;
+  while (pidAlive(pid) && Date.now() < end) await sleep(200);
+  if (pidAlive(pid)) throw new Error(`Supervisor did not stop within timeout: ${pid}`);
+  return { status: "stopped", pid };
+}
+
 async function main() {
   const command = process.argv[2] || ""; const payload = decodePayload();
   if (command === "init") { const config = normalizeHarnessConfig(payload.config); const adapterConfig = registry.validateConfig(config.adapter, config.adapterConfig); const normalized = { ...config, adapterConfig } as typeof config; await saveConfig(home, normalized); return output({ status: "ok", profile: normalized.name, config: normalized }); }
@@ -72,8 +104,20 @@ async function main() {
   if (command === "status") return output({ status: "ok", profile: payload.name, state: await readState(payload.name), config: await loadConfig(home, payload.name) });
   if (command === "bootstrap") { const config = await loadConfig(home, payload.name); const url = config.browser.startUrl || registry.get(config.adapter).bootstrapUrl; const result = payload.operation === "close" ? { closed: await bootstrapClose(config) } : await bootstrapOpen(config, home, url); return output({ status: "ok", profile: payload.name, ...result }); }
   if (command === "run") return output(await runProfile(payload.name, payload.action, payload.args || {}, payload.force === true));
-  if (command === "start") { const config = await loadConfig(home, payload.name); if (config.schedule.type !== "interval") throw new Error("harness_start requires interval schedule"); const paths = profilePaths(home, payload.name); if (fs.existsSync(paths.supervisorPid)) { const pid = Number((await fsp.readFile(paths.supervisorPid, "utf8")).trim()); if (pid && pidAlive(pid)) return output({ status: "already-running", pid }); } await fsp.rm(paths.stopFlag, { force: true }); const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "supervisor", Buffer.from(JSON.stringify({ name: payload.name })).toString("base64url")], { detached: true, stdio: "ignore" }); child.unref(); return output({ status: "started", pid: child.pid }); }
-  if (command === "stop") { const paths = profilePaths(home, payload.name); await fsp.mkdir(paths.root, { recursive: true }); await fsp.writeFile(paths.stopFlag, "stop\n", "utf8"); let pid = 0; try { pid = Number((await fsp.readFile(paths.supervisorPid, "utf8")).trim()); } catch {} const end = Date.now() + 5000; while (pid && pidAlive(pid) && Date.now() < end) await sleep(200); return output({ status: "stopped", pid: pid || null }); }
+  if (command === "execute-script") {
+    const result = await executeExecutionScript(payload.script, {
+      save: async (config) => {
+        const adapterConfig = registry.validateConfig(config.adapter, config.adapterConfig);
+        await saveConfig(home, { ...config, adapterConfig } as typeof config);
+      },
+      run: (name, action, args) => runProfile(name, action, args, true),
+      start: (name) => startSupervisor(name),
+      stop: (name) => stopSupervisor(name),
+    });
+    return output(result);
+  }
+  if (command === "start") return output(await startSupervisor(payload.name));
+  if (command === "stop") return output(await stopSupervisor(payload.name));
   if (command === "supervisor") return supervisor(payload.name);
   throw new Error(`Unknown runner command: ${command}`);
 }
