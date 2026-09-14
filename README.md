@@ -150,3 +150,16 @@ Do not use `queqiao restart` as a substitute for extension reinstallation.
 `harness_overview` returns reconciled progress for all local harness profiles without exposing full adapter prompts/configuration. Runtime state distinguishes desired supervisor state from the observed process state, so a stale PID after reboot is reported as stopped instead of remaining falsely `WAITING`.
 
 Harness restart policy is explicit. `lifecycle.resumePolicy` currently defaults to and only supports `manual`: persisted recurring profiles do not automatically restart after an OS reboot. A future `worker-start` policy requires a Queqiao worker-extension startup lifecycle hook; the current Extension API exposes tool registration but no workspace/runtime startup callback, so the extension does not bypass the host capability model with raw process spawning.
+## Release
+
+Releases are tag-driven. Pushes and pull requests only run CI; npm publishing is triggered only by a `vX.Y.Z` tag through `.github/workflows/release.yml`.
+
+The release job validates that the tag version matches both `package.json.version` and `queqiao.manifest.version`, then runs `npm ci`, `npm run check`, and the production dependency audit before publishing. npm authentication uses Trusted Publishing (GitHub Actions OIDC), so no long-lived npm publish token is stored in the repository.
+
+Release sequence:
+
+```text
+merge main -> main CI green -> create vX.Y.Z tag -> Release workflow -> npm publish
+```
+
+Do not manually publish a version that is intended to be released by this workflow.
