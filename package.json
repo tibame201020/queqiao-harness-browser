@@ -1,6 +1,6 @@
 {
   "name": "@tibame201020/queqiao-harness-browser",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Browser harness runtime extension for Queqiao",
   "type": "module",
   "main": "./dist/index.js",
@@ -49,7 +49,7 @@
     "module": "./dist/index.js",
     "manifest": {
       "id": "dev.queqiao.harness-browser",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "displayName": "Queqiao Harness Browser",
       "host": {
         "kind": "worker"
@@ -141,6 +141,35 @@
             "required": [
               "workspaceId"
             ]
+          },
+          "requiredCapabilities": [],
+          "risk": "read",
+          "annotations": {
+            "readOnlyHint": true,
+            "destructiveHint": false,
+            "openWorldHint": false,
+            "idempotentHint": true
+          }
+        },
+        {
+          "operation": "register",
+          "tool": "harness_overview",
+          "visibility": "public",
+          "title": "Read browser harness overview",
+          "description": "Read reconciled runtime progress for all locally configured harness profiles without exposing full adapter configuration.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "workspaceId"
+            ],
+            "$schema": "https://json-schema.org/draft/2020-12/schema"
           },
           "requiredCapabilities": [],
           "risk": "read",

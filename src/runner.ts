@@ -9,6 +9,8 @@ import { defaultHarnessHome, listProfiles, loadConfig, profilePaths, saveConfig 
 import { nextSupervisorDecision } from "./core/supervisor.js";
 import { executeRunLifecycle } from "./core/run-lifecycle.js";
 import { executeExecutionScript } from "./core/execution-script-runtime.js";
+import { reconcileRuntimeState } from "./core/runtime-status.js";
+import { buildHarnessOverviewEntry } from "./core/overview.js";
 import { AdapterRegistry } from "./adapters/registry.js";
 import { genericAdapter } from "./adapters/generic.js";
 import { chatgptAdapter } from "./adapters/chatgpt-adapter.js";
@@ -69,6 +71,7 @@ async function supervisor(name: string): Promise<void> {
 async function startSupervisor(name: string) {
   const config = await loadConfig(home, name);
   if (config.schedule.type !== "interval") throw new Error("harness_start requires interval schedule");
+  await writeState(name, { desiredSupervisorStatus: "RUNNING" });
   const paths = profilePaths(home, name);
   if (fs.existsSync(paths.supervisorPid)) {
     const pid = Number((await fsp.readFile(paths.supervisorPid, "utf8")).trim());
@@ -82,6 +85,7 @@ async function startSupervisor(name: string) {
 
 async function stopSupervisor(name: string) {
   const paths = profilePaths(home, name);
+  await writeState(name, { desiredSupervisorStatus: "STOPPED" });
   await fsp.mkdir(paths.root, { recursive: true });
   let pid = 0;
   try { pid = Number((await fsp.readFile(paths.supervisorPid, "utf8")).trim()); } catch {}
@@ -101,7 +105,8 @@ async function main() {
   const command = process.argv[2] || ""; const payload = decodePayload();
   if (command === "init") { const config = normalizeHarnessConfig(payload.config); const adapterConfig = registry.validateConfig(config.adapter, config.adapterConfig); const normalized = { ...config, adapterConfig } as typeof config; await saveConfig(home, normalized); return output({ status: "ok", profile: normalized.name, config: normalized }); }
   if (command === "list") return output({ status: "ok", profiles: await listProfiles(home) });
-  if (command === "status") return output({ status: "ok", profile: payload.name, state: await readState(payload.name), config: await loadConfig(home, payload.name) });
+  if (command === "status") { const config = await loadConfig(home, payload.name); const state = await readState(payload.name); return output({ status: "ok", profile: payload.name, state: reconcileRuntimeState(config, state, pidAlive), config }); }
+  if (command === "overview") { const profiles = await listProfiles(home); const entries = []; for (const profile of profiles) { const config = await loadConfig(home, profile); const state = await readState(profile); entries.push(buildHarnessOverviewEntry(config, state, pidAlive)); } return output({ status: "ok", profiles: entries }); }
   if (command === "bootstrap") { const config = await loadConfig(home, payload.name); const url = config.browser.startUrl || registry.get(config.adapter).bootstrapUrl; const result = payload.operation === "close" ? { closed: await bootstrapClose(config) } : await bootstrapOpen(config, home, url); return output({ status: "ok", profile: payload.name, ...result }); }
   if (command === "run") return output(await runProfile(payload.name, payload.action, payload.args || {}, payload.force === true));
   if (command === "execute-script") {

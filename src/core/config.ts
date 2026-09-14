@@ -22,6 +22,9 @@ export const harnessConfigInputSchema = z.object({
     startUrl: z.string().url().optional(),
   }).default({ engine: "chromium", channel: "chrome", headless: true, startMinimized: true, connection: "managed" }),
   schedule: scheduleSchema.default({ type: "manual" }),
+  lifecycle: z.object({
+    resumePolicy: z.literal("manual").default("manual"),
+  }).default({ resumePolicy: "manual" }),
   runPolicy: z.object({
     leaseMinutes: z.number().positive().max(10080).default(50),
     busyRetryMinutes: z.number().positive().max(1440).default(5),

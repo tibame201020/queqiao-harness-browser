@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { HarnessConfig } from "./config.js";
+import { normalizeHarnessConfig, type HarnessConfig } from "./config.js";
 
 export function defaultHarnessHome(): string {
   if (process.env.QUEQIAO_HARNESS_HOME) return process.env.QUEQIAO_HARNESS_HOME;
@@ -21,7 +21,7 @@ export async function saveConfig(home: string, config: HarnessConfig): Promise<v
 }
 
 export async function loadConfig(home: string, name: string): Promise<HarnessConfig> {
-  return JSON.parse(await fs.readFile(profilePaths(home, name).config, "utf8"));
+  return normalizeHarnessConfig(JSON.parse(await fs.readFile(profilePaths(home, name).config, "utf8")));
 }
 
 export async function listProfiles(home: string): Promise<string[]> {
