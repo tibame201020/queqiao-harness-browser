@@ -110,6 +110,29 @@ describe("execution script contract", () => {
     expect(result.config.schedule).toEqual({ type: "interval", intervalMinutes: 60, runOnStart: false });
   });
 
+  it("compiles recurring ChatGPT retention into automatic pre-trigger cleanup", () => {
+    const result = compileExecutionScript({
+      version: "1",
+      execution: { mode: "interval", id: "earn-hourly", intervalMinutes: 60, runOnStart: true },
+      task: {
+        adapter: "chatgpt",
+        action: "trigger",
+        target: {
+          project: { mode: "existing", name: "Example Ideas" },
+          conversation: { mode: "new" },
+        },
+        retention: { maxConversations: 24 },
+        input: { prompt: "Run one ideation round." },
+      },
+    });
+
+    expect(result.config.adapterConfig).toMatchObject({
+      project: { enabled: true, name: "Example Ideas" },
+      conversation: { newChatEachRun: true },
+      cleanup: { enabled: true, maxConversations: 24 },
+    });
+  });
+
   it("requires explicit script authorization for destructive cleanup", () => {
     expectScriptError(() => compileExecutionScript({
       version: "1",

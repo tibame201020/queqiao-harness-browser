@@ -17,6 +17,7 @@ Chromium-family browsers are supported today (`chrome`, `edge`, `brave`, `chromi
 | `harness_execute` | Preferred LLM-facing entrypoint: validate/compile/execute a resolved script |
 | `harness_init` | Low-level create/update a profile |
 | `harness_list` | List profiles |
+| `harness_overview` | Read reconciled progress for all profiles |
 | `harness_bootstrap` | Open/close a headed profile for first login/MFA |
 | `harness_run` | Run one adapter action |
 | `harness_start` | Start interval supervisor |
@@ -115,7 +116,7 @@ All ChatGPT behaviors are opt-in and independent:
 - `conversation.newChatEachRun=true` -> create a new chat for each trigger.
 - `conversation.newChatEachRun=false` -> `conversation.conversationId` is required and reused.
 - `cleanup.enabled=false` -> no automatic conversation cleanup.
-- `cleanup.enabled=true` -> Project mode is required and `cleanup.maxConversations` is required. Pinned chats are always retained; the cap is therefore best-effort when pinned chats exceed it.
+- `cleanup.enabled=true` -> Project mode is required and `cleanup.maxConversations` is required. Pinned chats are always retained; the cap is therefore best-effort when pinned chats exceed it. For recurring new-chat workflows, execution-script `task.retention.maxConversations` compiles to this policy and cleanup runs before each trigger so the new conversation fits inside the cap.
 - `project.requiredSourceName` is optional and only valid in Project mode.
 - `trigger.prompt` is only required for the `trigger` action; it may also be supplied per run through `args.prompt`.
 
@@ -143,3 +144,9 @@ detach -> uninstall -> install local -> attach
 ```
 
 Do not use `queqiao restart` as a substitute for extension reinstallation.
+
+## Runtime observability and restart policy
+
+`harness_overview` returns reconciled progress for all local harness profiles without exposing full adapter prompts/configuration. Runtime state distinguishes desired supervisor state from the observed process state, so a stale PID after reboot is reported as stopped instead of remaining falsely `WAITING`.
+
+Harness restart policy is explicit. `lifecycle.resumePolicy` currently defaults to and only supports `manual`: persisted recurring profiles do not automatically restart after an OS reboot. A future `worker-start` policy requires a Queqiao worker-extension startup lifecycle hook; the current Extension API exposes tool registration but no workspace/runtime startup callback, so the extension does not bypass the host capability model with raw process spawning.

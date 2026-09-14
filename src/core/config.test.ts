@@ -10,6 +10,7 @@ describe("normalizeHarnessConfig", () => {
     expect(cfg.browser.headless).toBe(true);
     expect(cfg.browser.startMinimized).toBe(true);
     expect(cfg.schedule.type).toBe("manual");
+    expect(cfg.lifecycle.resumePolicy).toBe("manual");
     expect(cfg.runPolicy.leaseMinutes).toBe(50);
   });
 
