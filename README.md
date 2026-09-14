@@ -124,7 +124,7 @@ ChatGPT actions:
 
 - `list_projects`
 - `trigger`
-- `cleanup` — dry-run by default; `{ "apply": true }` performs deletion. Cleanup preserves pinned chats twice: pinned-ID discovery and a live `Unpin` guard before deletion.
+- `cleanup` ??dry-run by default; `{ "apply": true }` performs deletion. Cleanup preserves pinned chats twice: pinned-ID discovery and a live `Unpin` guard before deletion.
 
 ## Generic adapter
 
@@ -152,14 +152,14 @@ Do not use `queqiao restart` as a substitute for extension reinstallation.
 Harness restart policy is explicit. `lifecycle.resumePolicy` currently defaults to and only supports `manual`: persisted recurring profiles do not automatically restart after an OS reboot. A future `worker-start` policy requires a Queqiao worker-extension startup lifecycle hook; the current Extension API exposes tool registration but no workspace/runtime startup callback, so the extension does not bypass the host capability model with raw process spawning.
 ## Release
 
-Releases are tag-driven. Pushes and pull requests only run CI; npm publishing is triggered only by a `vX.Y.Z` tag through `.github/workflows/release.yml`.
+Release publishing follows the same model as `Queqiao` and `queqiao-mcp`: pushes and pull requests only run CI. npm publishing is triggered by publishing a GitHub Release for an existing `vX.Y.Z` tag, or by an explicit `workflow_dispatch` for an existing release tag.
 
-The release job validates that the tag version matches both `package.json.version` and `queqiao.manifest.version`, then runs `npm ci`, `npm run check`, and the production dependency audit before publishing. npm authentication uses Trusted Publishing (GitHub Actions OIDC), so no long-lived npm publish token is stored in the repository.
+The release job checks out the immutable release tag, verifies that the tag points at `HEAD`, verifies that the tag matches both `package.json.version` and `queqiao.manifest.version`, then runs `npm ci`, the production dependency audit, and `npm run check`. It skips publishing if that package version already exists in the npm registry. npm authentication uses Trusted Publishing (GitHub Actions OIDC), and successful publishing uses npm provenance.
 
 Release sequence:
 
 ```text
-merge main -> main CI green -> create vX.Y.Z tag -> Release workflow -> npm publish
+merge main -> main CI green -> create vX.Y.Z tag -> publish GitHub Release -> release workflow -> npm publish --provenance
 ```
 
 Do not manually publish a version that is intended to be released by this workflow.
