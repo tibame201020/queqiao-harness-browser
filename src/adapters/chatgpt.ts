@@ -14,3 +14,33 @@ export function isPinnedAriaLabel(label: string | null | undefined): boolean {
 export function selectCleanupCandidates(items: readonly ChatConversation[]): ChatConversation[] {
   return items.filter((item) => !item.pinned);
 }
+
+export type AssistantCollectSnapshot = {
+  assistantCount: number;
+  latestText: string;
+  generating: boolean;
+};
+
+export type AssistantCollectState = {
+  latestText: string;
+  stablePasses: number;
+  done: boolean;
+};
+
+export function initialAssistantCollectState(): AssistantCollectState {
+  return { latestText: "", stablePasses: 0, done: false };
+}
+
+export function advanceAssistantCollectScan(
+  state: AssistantCollectState,
+  snapshot: AssistantCollectSnapshot,
+): AssistantCollectState {
+  const latestText = snapshot.latestText.trim();
+  const canComplete = snapshot.assistantCount > 0 && latestText.length > 0 && !snapshot.generating;
+  const stablePasses = canComplete && latestText === state.latestText ? state.stablePasses + 1 : 0;
+  return {
+    latestText,
+    stablePasses,
+    done: canComplete && stablePasses >= 1,
+  };
+}

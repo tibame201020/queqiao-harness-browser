@@ -2,7 +2,12 @@ import { z } from "zod";
 import type { BrowserSession } from "../core/session.js";
 import { selectRetentionCandidates } from "../core/state.js";
 import type { HarnessAdapter } from "./types.js";
-import { deleteConversation, listProjectConversations, listProjects, openConversation, openProject } from "./chatgpt-projects.js";
+import {
+  advanceAssistantCollectScan,
+  conversationIdFromHref,
+  initialAssistantCollectState,
+} from "./chatgpt.js";
+import { deleteConversation, listProjectConversations, listProjects, openConversation, openProject, projectConversationUrl, startProjectNewConversation } from "./chatgpt-projects.js";
 
 const conversationIdSchema = z.string().uuid();
 
@@ -40,6 +45,13 @@ const chatGptConfigSchema = z.object({
     ctx.addIssue({ code: "custom", path: ["cleanup", "maxConversations"], message: "cleanup.maxConversations is required when cleanup.enabled=true" });
   }
 });
+
+const collectArgsSchema = z.object({
+  conversationId: conversationIdSchema,
+  conversationUrl: z.string().url().optional(),
+  projectName: z.string().min(1).max(256).optional(),
+  timeoutMs: z.number().int().min(1000).max(90_000).default(60_000),
+}).strict();
 
 export type ChatGptAdapterConfig = z.infer<typeof chatGptConfigSchema>;
 
@@ -102,15 +114,18 @@ async function cleanupForTrigger(session: BrowserSession, cfg: ChatGptAdapterCon
   }
 }
 
-async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapterConfig): Promise<void> {
+async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapterConfig): Promise<{ projectId?: string }> {
   if (cfg.project.enabled) {
+    if (cfg.conversation.newChatEachRun && !cfg.cleanup.enabled && !cfg.project.requiredSourceName) {
+      return startProjectNewConversation(session.page, cfg.project.name!);
+    }
     await openProject(session.page, cfg.project.name!);
     if (cfg.project.requiredSourceName) await requireSource(session, cfg.project.requiredSourceName);
     await cleanupForTrigger(session, cfg);
     if (!cfg.conversation.newChatEachRun) {
       await openConversation(session.page, cfg.conversation.conversationId!, true);
     }
-    return;
+    return {};
   }
 
   if (cfg.conversation.newChatEachRun) {
@@ -118,26 +133,110 @@ async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapter
   } else {
     await openConversation(session.page, cfg.conversation.conversationId!, false);
   }
+  return {};
 }
 
 async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>) {
   const prompt = String(args.prompt || cfg.trigger.prompt || "");
   if (!prompt) throw new Error("chatgpt trigger requires trigger.prompt or args.prompt");
 
-  await prepareTriggerTarget(session, cfg);
+  const target = await prepareTriggerTarget(session, cfg);
   const page = session.page;
-  const composer = page.locator("#prompt-textarea");
-  await composer.waitFor({ state: "visible", timeout: 15_000 });
+  const composer = page.locator('#prompt-textarea, [contenteditable="true"][role="textbox"]').first();
+  await composer.waitFor({ state: "visible", timeout: 5_000 });
   await composer.click();
   await page.keyboard.insertText(prompt);
-  const send = page.locator('[data-testid="send-button"]');
-  await send.waitFor({ state: "visible", timeout: 10_000 });
-  await send.click();
+
+  const sendByTestId = page.locator('[data-testid="send-button"]').first();
+  if (await sendByTestId.isVisible().catch(() => false)) {
+    await sendByTestId.click();
+  } else {
+    const sendByLabel = page.locator('button[type="submit"]').first();
+    await sendByLabel.waitFor({ state: "visible", timeout: 5_000 });
+    await sendByLabel.click();
+  }
 
   if (cfg.conversation.newChatEachRun) {
-    await page.waitForURL(/\/c\/[0-9a-f-]{36}/i, { timeout: 20_000 });
+    await page.waitForURL(/\/c\/[0-9a-f-]{36}/i, { timeout: 8_000 });
   }
-  return { status: "triggered", url: page.url() };
+  const transientUrl = page.url();
+  const conversationId = conversationIdFromHref(transientUrl) ?? cfg.conversation.conversationId ?? null;
+  if (!conversationId) throw new Error(`Unable to resolve ChatGPT conversation id after trigger: ${transientUrl}`);
+  const url = target.projectId ? projectConversationUrl(target.projectId, conversationId) : transientUrl;
+  return { status: "triggered", url, conversationId };
+}
+
+async function isGenerationActive(session: BrowserSession): Promise<boolean> {
+  const page = session.page;
+  const selectors = [
+    '[data-testid="stop-button"]',
+    'button[aria-label="Stop generating"]',
+    'button[aria-label="停止產生"]',
+    'button[aria-label="停止生成"]',
+  ];
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    if (await locator.isVisible().catch(() => false)) return true;
+  }
+  return false;
+}
+
+async function collect(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>) {
+  const input = collectArgsSchema.parse(args);
+  const page = session.page;
+  if (input.conversationUrl) {
+    const parsed = new URL(input.conversationUrl);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "chatgpt.com") {
+      throw new Error("chatgpt collect conversationUrl must use https://chatgpt.com");
+    }
+    if (conversationIdFromHref(parsed.pathname) !== input.conversationId) {
+      throw new Error("chatgpt collect conversationUrl does not match conversationId");
+    }
+    await page.goto(parsed.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (!page.url().includes(`/c/${input.conversationId}`)) {
+      throw new Error(`Conversation not found: ${input.conversationId}`);
+    }
+  } else {
+    const projectName = input.projectName ?? (cfg.project.enabled ? cfg.project.name : undefined);
+    if (projectName) {
+      await openProject(page, projectName);
+      await openConversation(page, input.conversationId, true);
+    } else {
+      await openConversation(page, input.conversationId, false);
+    }
+  }
+
+  const deadline = Date.now() + input.timeoutMs;
+  let state = initialAssistantCollectState();
+
+  while (true) {
+    const assistantMessages = page.locator('[data-message-author-role="assistant"], [data-markdown-text-style="assistant-message"]');
+    const assistantCount = await assistantMessages.count();
+    const latestText = assistantCount > 0
+      ? await assistantMessages.nth(assistantCount - 1).innerText().catch(() => "")
+      : "";
+    const generating = await isGenerationActive(session);
+
+    state = advanceAssistantCollectScan(state, { assistantCount, latestText, generating });
+    if (state.done) {
+      return {
+        status: "completed",
+        conversationId: input.conversationId,
+        text: state.latestText,
+        url: page.url(),
+      };
+    }
+
+    if (Date.now() >= deadline) {
+      return {
+        status: "pending",
+        conversationId: input.conversationId,
+        partialText: state.latestText,
+        url: page.url(),
+      };
+    }
+    await page.waitForTimeout(500);
+  }
 }
 
 export const chatgptAdapter: HarnessAdapter = {
@@ -161,6 +260,7 @@ export const chatgptAdapter: HarnessAdapter = {
       return { apply, results };
     }
     if (action === "trigger") return trigger(session, cfg, args);
+    if (action === "collect") return collect(session, cfg, args);
     throw new Error(`Unsupported chatgpt action: ${action}`);
   },
 };
