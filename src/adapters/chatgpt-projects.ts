@@ -114,6 +114,53 @@ export async function openConversation(page: Page, conversationId: string, proje
   if (!page.url().includes(`/c/${conversationId}`)) throw new Error(`Conversation not found in project: ${conversationId}`);
 }
 
+export function isProjectNewChatButtonLabel(label: string | null | undefined, projectName: string): boolean {
+  if (!label || !label.includes(projectName)) return false;
+  return /開始新對話|start(?: a)? new chat/i.test(label);
+}
+
+export function resolveProjectRowIndex(labels: readonly (string | null)[], projectName: string): number | null {
+  const matches = labels.flatMap((label, index) => label === projectName ? [index] : []);
+  if (matches.length > 1) throw new Error(`Project name is ambiguous: ${projectName}`);
+  return matches[0] ?? null;
+}
+
+export function projectConversationUrl(projectId: string, conversationId: string): string {
+  return `https://chatgpt.com/g/${projectId}/c/${conversationId}`;
+}
+
+export async function startProjectNewConversation(page: Page, projectName: string): Promise<{ projectId: string }> {
+  await ensureProjectsPage(page);
+  const rows = page.locator('[data-app-action-sidebar-project-row]');
+  const deadline = Date.now() + 10_000;
+  let rowIndex: number | null = null;
+  while (Date.now() < deadline) {
+    const labels: (string | null)[] = [];
+    for (let i = 0; i < await rows.count(); i++) {
+      labels.push(await rows.nth(i).getAttribute("data-app-action-sidebar-project-label"));
+    }
+    rowIndex = resolveProjectRowIndex(labels, projectName);
+    if (rowIndex !== null) break;
+    await page.waitForTimeout(250);
+  }
+  if (rowIndex === null) throw new Error(`Project not found in sidebar: ${projectName}`);
+
+  const row = rows.nth(rowIndex);
+  const projectId = await row.getAttribute("data-app-action-sidebar-project-id");
+  if (!projectId) throw new Error(`Project id missing in sidebar: ${projectName}`);
+  const buttons = row.locator("button");
+  for (let i = 0; i < await buttons.count(); i++) {
+    const button = buttons.nth(i);
+    const label = await button.getAttribute("aria-label");
+    if (isProjectNewChatButtonLabel(label, projectName)) {
+      await button.click();
+      await page.locator('#prompt-textarea, [contenteditable="true"][role="textbox"]').first().waitFor({ state: "visible", timeout: 5_000 });
+      return { projectId };
+    }
+  }
+  throw new Error(`Project new-chat action not found: ${projectName}`);
+}
+
 export async function pinnedConversationIds(page: Page): Promise<Set<string>> {
   for (const label of ["已釘選", "Pinned"]) {
     const button = page.getByRole("button", { name: label, exact: true });

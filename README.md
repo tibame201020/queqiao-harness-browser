@@ -70,7 +70,7 @@ For `chatgpt.cleanup` with `input.apply=true`, the script must also include `"au
 
 `init -> bootstrap (headed, when login is needed) -> run/start (headless or headed-minimized) -> browser closes after each managed action`.
 
-The persistent user-data directory remains, so login state survives browser shutdown. `bootstrap` is repeatable when a site requires re-authentication. Managed runs use `browser.headless`; when it is `false`, `browser.startMinimized=true` keeps the runtime browser minimized. Some sites can challenge headless automation; ChatGPT has done so in live verification, so those profiles should use headed-minimized mode.
+The persistent user-data directory remains, so login state survives browser shutdown. `bootstrap` is repeatable when a site requires re-authentication. Managed runs use `browser.headless`; when it is `false`, `browser.startMinimized=true` keeps the runtime browser minimized. ChatGPT has challenged both headless and managed persistent-context automation in live verification. A headed browser opened for the persisted login profile and accessed through an explicit CDP profile completed the trigger/collect POC successfully; do not assume managed mode is sufficient when ChatGPT presents an anti-bot challenge.
 
 ## ChatGPT adapter contract
 
@@ -119,13 +119,28 @@ All ChatGPT behaviors are opt-in and independent:
 - `cleanup.enabled=true` -> Project mode is required and `cleanup.maxConversations` is required. Pinned chats are always retained; the cap is therefore best-effort when pinned chats exceed it. For recurring new-chat workflows, execution-script `task.retention.maxConversations` compiles to this policy and cleanup runs before each trigger so the new conversation fits inside the cap.
 - `project.requiredSourceName` is optional and only valid in Project mode.
 - `trigger.prompt` is only required for the `trigger` action; it may also be supplied per run through `args.prompt`.
+- A successful `trigger` returns both `conversationId` and the canonical conversation URL. Trigger success means the prompt was submitted; it does not mean the assistant has finished.
+- `collect` requires `args.conversationId`. `args.conversationUrl` is optional and, when supplied, must be an `https://chatgpt.com/.../c/<conversationId>` URL matching the same ID. `args.timeoutMs` is bounded to 1-90 seconds and defaults to 60 seconds.
+- `collect` returns `status: "completed"` with the latest stable assistant text, or `status: "pending"` with any partial text when the bounded wait expires. Harness does not judge answer quality or summarize the child result.
 
 ChatGPT actions:
 
 - `list_projects`
 - `trigger`
-- `cleanup` ??dry-run by default; `{ "apply": true }` performs deletion. Cleanup preserves pinned chats twice: pinned-ID discovery and a live `Unpin` guard before deletion.
+- `collect`
+- `cleanup` - dry-run by default; `{ "apply": true }` performs deletion. Cleanup preserves pinned chats twice: pinned-ID discovery and a live `Unpin` guard before deletion.
 
+### External subagent-style delegation
+
+The ChatGPT adapter can be used as an external subagent execution substrate without turning Harness into an agent framework:
+
+```text
+Parent LLM -> trigger -> child ChatGPT conversation -> collect -> Parent LLM synthesis
+```
+
+The Parent LLM owns task decomposition, retry decisions, and result synthesis. Harness only owns deterministic browser/session execution and result collection. The verified POC used `harness_run` with an explicit ChatGPT/CDP profile: `trigger` returned the child conversation identity and `collect` returned the child assistant response end-to-end.
+
+This release does **not** add a general orchestration API. `collect` is an adapter action exposed through `harness_run`; the Execution Script Contract still compiles the existing actions only. `delegate/status/cancel` remain future lifecycle work.
 ## Generic adapter
 
 `open` navigates to an HTTP(S) URL and optionally waits for a selector. This is the reference that proves the core runtime is site-agnostic.
