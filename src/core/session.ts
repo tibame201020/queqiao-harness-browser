@@ -10,9 +10,19 @@ export async function openBrowserSession(config: HarnessConfig, home: string): P
   if (config.browser.connection === "cdp") {
     const browser = await chromium.connectOverCDP(config.browser.cdpUrl!);
     const context = browser.contexts()[0];
-    if (!context) throw new Error("CDP browser has no context");
-    const page = context.pages()[0] ?? await context.newPage();
-    return { context, page, close: async () => {} };
+    if (!context) {
+      await browser.close();
+      throw new Error("CDP browser has no context");
+    }
+    try {
+      const page = context.pages()[0] ?? await context.newPage();
+      // For a CDP-attached Browser, close() disconnects Playwright;
+      // it does not shut down the persistent user-owned Chrome process.
+      return { context, page, close: async () => browser.close() };
+    } catch (error) {
+      await browser.close();
+      throw error;
+    }
   }
   const executablePath = resolveBrowserExecutable({ channel: config.browser.channel, executablePath: config.browser.executablePath });
   const userDataDir = config.browser.userDataDir ?? profilePaths(home, config.name).browserProfile;
@@ -21,6 +31,9 @@ export async function openBrowserSession(config: HarnessConfig, home: string): P
     executablePath, headless: config.browser.headless,
     args: managedBrowserArgs({ headless: config.browser.headless, startMinimized: config.browser.startMinimized }),
   });
-  const page = context.pages()[0] ?? await context.newPage();
-  return { context, page, close: async () => context.close() };
+  return {
+    context,
+    page: context.pages()[0] ?? await context.newPage(),
+    close: async () => context.close(),
+  };
 }
