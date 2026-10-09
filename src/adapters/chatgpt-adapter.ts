@@ -27,6 +27,7 @@ const chatGptConfigSchema = z.object({
   }).default({ enabled: false }),
   trigger: z.object({
     prompt: z.string().min(1).max(200_000).optional(),
+    pluginId: z.string().regex(/^plugin_asdk_app_[0-9a-f]{32}$/).optional(),
   }).default({}),
 }).superRefine((cfg, ctx) => {
   if (cfg.project.enabled && !cfg.project.name) {
@@ -38,7 +39,10 @@ const chatGptConfigSchema = z.object({
   if (!cfg.conversation.newChatEachRun && !cfg.conversation.conversationId) {
     ctx.addIssue({ code: "custom", path: ["conversation", "conversationId"], message: "conversationId is required when conversation.newChatEachRun=false" });
   }
-  if (cfg.cleanup.enabled && !cfg.project.enabled) {
+  if (cfg.trigger.pluginId && (cfg.project.enabled || !cfg.conversation.newChatEachRun)) {
+    ctx.addIssue({ code: "custom", path: ["trigger", "pluginId"],
+      message: "pluginId requires a new conversation without Project mode" });
+  }  if (cfg.cleanup.enabled && !cfg.project.enabled) {
     ctx.addIssue({ code: "custom", path: ["cleanup", "enabled"], message: "cleanup requires project.enabled=true" });
   }
   if (cfg.cleanup.enabled && !cfg.cleanup.maxConversations) {
@@ -129,7 +133,20 @@ async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapter
   }
 
   if (cfg.conversation.newChatEachRun) {
-    await session.page.goto("https://chatgpt.com/", { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (cfg.trigger.pluginId) {
+      // The installed plugin's "Try in chat" flow selects the app for this draft.
+      // Only a validated plugin ID can influence navigation.
+      await session.page.goto(`https://chatgpt.com/plugins/${cfg.trigger.pluginId}`, {
+        waitUntil: "domcontentloaded", timeout: 30_000,
+      });
+      const tryButton = session.page.getByRole("button", {
+        name: /Try in chat|\u5728\u5c0d\u8a71\u4e2d\u8a66\u7528/i,
+      });
+      await tryButton.waitFor({ state: "visible", timeout: 15_000 });
+      await tryButton.click();
+    } else {
+      await session.page.goto("https://chatgpt.com/", { waitUntil: "domcontentloaded", timeout: 30_000 });
+    }
   } else {
     await openConversation(session.page, cfg.conversation.conversationId!, false);
   }

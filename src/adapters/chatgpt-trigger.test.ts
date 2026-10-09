@@ -36,3 +36,44 @@ describe("ChatGPT composer compatibility", () => {
     expect(send.click).toHaveBeenCalledTimes(1);
   });
 });
+describe("ChatGPT pinned plugin target", () => {
+  it("opens the requested plugin's Try in chat before sending the prompt", async () => {
+    const calls: string[] = [];
+    const composer = {
+      waitFor: vi.fn(async () => undefined),
+      click: vi.fn(async () => calls.push("composer")),
+    };
+    const send = {
+      waitFor: vi.fn(async () => undefined),
+      click: vi.fn(async () => calls.push("send")),
+    };
+    const tryInChat = {
+      waitFor: vi.fn(async () => undefined),
+      click: vi.fn(async () => calls.push("try-in-chat")),
+    };
+    const page = {
+      goto: vi.fn(async (url: string) => { calls.push("goto:" + url); }),
+      getByRole: vi.fn(() => tryInChat),
+      locator: vi.fn((selector: string) => {
+        return { first: () => selector.includes("button[type=") ? send : composer };
+      }),
+      keyboard: { insertText: vi.fn(async () => calls.push("typing")) },
+      waitForURL: vi.fn(async () => undefined),
+      url: () => "https://chatgpt.com/c/11111111-1111-4111-8111-111111111111",
+    };
+    const response = await chatgptAdapter.execute("trigger", { prompt: "Use plugin to verify worker" }, {
+      browser: { page }, config: { adapterConfig: {
+        conversation: { newChatEachRun: true }, trigger: {
+          pluginId: "plugin_asdk_app_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+      } },
+    });
+    expect(response).toMatchObject({ status: "triggered" });
+    expect(page.goto).toHaveBeenCalledWith(
+      "https://chatgpt.com/plugins/plugin_asdk_app_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      expect.any(Object),
+    );
+    expect(calls.indexOf("try-in-chat")).toBeGreaterThan(calls.findIndex(x => x.startsWith("goto:")));
+    expect(calls.indexOf("try-in-chat")).toBeLessThan(calls.indexOf("typing"));
+  });
+});
