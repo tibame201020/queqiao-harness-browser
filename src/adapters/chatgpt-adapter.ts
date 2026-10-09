@@ -142,19 +142,15 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
 
   const target = await prepareTriggerTarget(session, cfg);
   const page = session.page;
-  const composer = page.locator('#prompt-textarea, [contenteditable="true"][role="textbox"]').first();
-  await composer.waitFor({ state: "visible", timeout: 5_000 });
+  // Support both legacy and current ChatGPT editor layouts.
+  const composer = page.locator('#prompt-textarea:visible, [role="textbox"][contenteditable="true"]:visible').first();
+  await composer.waitFor({ state: "visible", timeout: 15_000 });
   await composer.click();
   await page.keyboard.insertText(prompt);
+  const send = page.locator('[data-testid="send-button"]:visible, form:has([role="textbox"][contenteditable="true"]) button[type="submit"]:visible').first();
+  await send.waitFor({ state: "visible", timeout: 10_000 });
+  await send.click();
 
-  const sendByTestId = page.locator('[data-testid="send-button"]').first();
-  if (await sendByTestId.isVisible().catch(() => false)) {
-    await sendByTestId.click();
-  } else {
-    const sendByLabel = page.locator('button[type="submit"]').first();
-    await sendByLabel.waitFor({ state: "visible", timeout: 5_000 });
-    await sendByLabel.click();
-  }
 
   if (cfg.conversation.newChatEachRun) {
     await page.waitForURL(/\/c\/[0-9a-f-]{36}/i, { timeout: 8_000 });

@@ -123,6 +123,11 @@ All ChatGPT behaviors are opt-in and independent:
 - `collect` requires `args.conversationId`. `args.conversationUrl` is optional and, when supplied, must be an `https://chatgpt.com/.../c/<conversationId>` URL matching the same ID. `args.timeoutMs` is bounded to 1-90 seconds and defaults to 60 seconds.
 - `collect` returns `status: "completed"` with the latest stable assistant text, or `status: "pending"` with any partial text when the bounded wait expires. Harness does not judge answer quality or summarize the child result.
 
+ChatGPT's composer can be rendered as either the legacy `#prompt-textarea`
+or a visible `[role="textbox"][contenteditable="true"]` editor.
+The trigger also supports the current composer form's submit button when the
+legacy `send-button` test ID is absent. Use an authenticated browser profile
+for real UI smoke tests; do not commit profiles, cookies or conversation IDs.
 ChatGPT actions:
 
 - `list_projects`
