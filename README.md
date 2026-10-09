@@ -130,6 +130,7 @@ All ChatGPT behaviors are opt-in and independent:
 - A successful `trigger` returns both `conversationId` and the canonical conversation URL. Trigger success means the prompt was submitted; it does not mean the assistant has finished.
 - `collect` requires `args.conversationId`. `args.conversationUrl` is optional and, when supplied, must be an `https://chatgpt.com/.../c/<conversationId>` URL matching the same ID. `args.timeoutMs` is bounded to 1-90 seconds and defaults to 60 seconds.
 - `collect` returns `status: "completed"` with the latest stable assistant text, or `status: "pending"` with any partial text when the bounded wait expires. Harness does not judge answer quality or summarize the child result.
+- `collect` accepts optional `args.settleMs` (1000–30000, default 3000). The assistant message count and text must remain unchanged for this quiet period while generation is inactive. Use a longer quiet period for multi-tool runs; still verify backend receipts independently.
 
 ChatGPT's composer can be rendered as either the legacy `#prompt-textarea`
 or a visible `[role="textbox"][contenteditable="true"]` editor.

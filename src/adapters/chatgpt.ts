@@ -23,24 +23,33 @@ export type AssistantCollectSnapshot = {
 
 export type AssistantCollectState = {
   latestText: string;
+  assistantCount: number;
   stablePasses: number;
+  stableSinceMs: number | null;
   done: boolean;
 };
 
 export function initialAssistantCollectState(): AssistantCollectState {
-  return { latestText: "", stablePasses: 0, done: false };
+  return { latestText: "", assistantCount: 0, stablePasses: 0, stableSinceMs: null, done: false };
 }
 
 export function advanceAssistantCollectScan(
   state: AssistantCollectState,
   snapshot: AssistantCollectSnapshot,
+  nowMs = Date.now(),
+  minStableMs = 0,
 ): AssistantCollectState {
   const latestText = snapshot.latestText.trim();
   const canComplete = snapshot.assistantCount > 0 && latestText.length > 0 && !snapshot.generating;
-  const stablePasses = canComplete && latestText === state.latestText ? state.stablePasses + 1 : 0;
+  const unchanged = canComplete && latestText === state.latestText
+    && snapshot.assistantCount === state.assistantCount && state.stableSinceMs !== null;
+  const stablePasses = unchanged ? state.stablePasses + 1 : 0;
+  const stableSinceMs = !canComplete ? null : unchanged ? state.stableSinceMs : nowMs;
   return {
     latestText,
+    assistantCount: snapshot.assistantCount,
     stablePasses,
-    done: canComplete && stablePasses >= 1,
+    stableSinceMs,
+    done: Boolean(unchanged && stableSinceMs !== null && nowMs - stableSinceMs >= minStableMs),
   };
 }

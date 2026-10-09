@@ -55,6 +55,7 @@ const collectArgsSchema = z.object({
   conversationUrl: z.string().url().optional(),
   projectName: z.string().min(1).max(256).optional(),
   timeoutMs: z.number().int().min(1000).max(90_000).default(60_000),
+  settleMs: z.number().int().min(1000).max(30_000).default(3000),
 }).strict();
 
 export type ChatGptAdapterConfig = z.infer<typeof chatGptConfigSchema>;
@@ -230,7 +231,7 @@ async function collect(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
       : "";
     const generating = await isGenerationActive(session);
 
-    state = advanceAssistantCollectScan(state, { assistantCount, latestText, generating });
+    state = advanceAssistantCollectScan(state, { assistantCount, latestText, generating }, Date.now(), input.settleMs);
     if (state.done) {
       return {
         status: "completed",
