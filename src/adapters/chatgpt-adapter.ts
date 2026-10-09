@@ -27,6 +27,7 @@ const chatGptConfigSchema = z.object({
   }).default({ enabled: false }),
   trigger: z.object({
     prompt: z.string().min(1).max(200_000).optional(),
+    pluginId: z.string().regex(/^plugin_asdk_app_[0-9a-f]{32}$/).optional(),
   }).default({}),
 }).superRefine((cfg, ctx) => {
   if (cfg.project.enabled && !cfg.project.name) {
@@ -38,7 +39,10 @@ const chatGptConfigSchema = z.object({
   if (!cfg.conversation.newChatEachRun && !cfg.conversation.conversationId) {
     ctx.addIssue({ code: "custom", path: ["conversation", "conversationId"], message: "conversationId is required when conversation.newChatEachRun=false" });
   }
-  if (cfg.cleanup.enabled && !cfg.project.enabled) {
+  if (cfg.trigger.pluginId && (cfg.project.enabled || !cfg.conversation.newChatEachRun)) {
+    ctx.addIssue({ code: "custom", path: ["trigger", "pluginId"],
+      message: "pluginId requires a new conversation without Project mode" });
+  }  if (cfg.cleanup.enabled && !cfg.project.enabled) {
     ctx.addIssue({ code: "custom", path: ["cleanup", "enabled"], message: "cleanup requires project.enabled=true" });
   }
   if (cfg.cleanup.enabled && !cfg.cleanup.maxConversations) {
@@ -51,6 +55,7 @@ const collectArgsSchema = z.object({
   conversationUrl: z.string().url().optional(),
   projectName: z.string().min(1).max(256).optional(),
   timeoutMs: z.number().int().min(1000).max(90_000).default(60_000),
+  settleMs: z.number().int().min(1000).max(30_000).default(3000),
 }).strict();
 
 export type ChatGptAdapterConfig = z.infer<typeof chatGptConfigSchema>;
@@ -129,7 +134,20 @@ async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapter
   }
 
   if (cfg.conversation.newChatEachRun) {
-    await session.page.goto("https://chatgpt.com/", { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (cfg.trigger.pluginId) {
+      // The installed plugin's "Try in chat" flow selects the app for this draft.
+      // Only a validated plugin ID can influence navigation.
+      await session.page.goto(`https://chatgpt.com/plugins/${cfg.trigger.pluginId}`, {
+        waitUntil: "domcontentloaded", timeout: 30_000,
+      });
+      const tryButton = session.page.getByRole("button", {
+        name: /Try in chat|\u5728\u5c0d\u8a71\u4e2d\u8a66\u7528/i,
+      });
+      await tryButton.waitFor({ state: "visible", timeout: 15_000 });
+      await tryButton.click();
+    } else {
+      await session.page.goto("https://chatgpt.com/", { waitUntil: "domcontentloaded", timeout: 30_000 });
+    }
   } else {
     await openConversation(session.page, cfg.conversation.conversationId!, false);
   }
@@ -142,19 +160,15 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
 
   const target = await prepareTriggerTarget(session, cfg);
   const page = session.page;
-  const composer = page.locator('#prompt-textarea, [contenteditable="true"][role="textbox"]').first();
-  await composer.waitFor({ state: "visible", timeout: 5_000 });
+  // Support both legacy and current ChatGPT editor layouts.
+  const composer = page.locator('#prompt-textarea:visible, [role="textbox"][contenteditable="true"]:visible').first();
+  await composer.waitFor({ state: "visible", timeout: 15_000 });
   await composer.click();
   await page.keyboard.insertText(prompt);
+  const send = page.locator('[data-testid="send-button"]:visible, form:has([role="textbox"][contenteditable="true"]) button[type="submit"]:visible').first();
+  await send.waitFor({ state: "visible", timeout: 10_000 });
+  await send.click();
 
-  const sendByTestId = page.locator('[data-testid="send-button"]').first();
-  if (await sendByTestId.isVisible().catch(() => false)) {
-    await sendByTestId.click();
-  } else {
-    const sendByLabel = page.locator('button[type="submit"]').first();
-    await sendByLabel.waitFor({ state: "visible", timeout: 5_000 });
-    await sendByLabel.click();
-  }
 
   if (cfg.conversation.newChatEachRun) {
     await page.waitForURL(/\/c\/[0-9a-f-]{36}/i, { timeout: 8_000 });
@@ -217,7 +231,7 @@ async function collect(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
       : "";
     const generating = await isGenerationActive(session);
 
-    state = advanceAssistantCollectScan(state, { assistantCount, latestText, generating });
+    state = advanceAssistantCollectScan(state, { assistantCount, latestText, generating }, Date.now(), input.settleMs);
     if (state.done) {
       return {
         status: "completed",

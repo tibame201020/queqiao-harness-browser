@@ -119,10 +119,24 @@ All ChatGPT behaviors are opt-in and independent:
 - `cleanup.enabled=true` -> Project mode is required and `cleanup.maxConversations` is required. Pinned chats are always retained; the cap is therefore best-effort when pinned chats exceed it. For recurring new-chat workflows, execution-script `task.retention.maxConversations` compiles to this policy and cleanup runs before each trigger so the new conversation fits inside the cap.
 - `project.requiredSourceName` is optional and only valid in Project mode.
 - `trigger.prompt` is only required for the `trigger` action; it may also be supplied per run through `args.prompt`.
+- `trigger.pluginId` (optional) selects an already-installed ChatGPT Plugin by its
+  `plugin_asdk_app_<32 lowercase hex characters>` identifier. When set,
+  the adapter opens its ChatGPT plugin page and clicks **Try in chat**
+  before sending a new conversation's prompt. Plugin selection is
+  opt-in, and does not work with Project mode or conversation reuse.
+  The user must grant any OAuth consent required by the plugin. Store
+  site-specific plugin IDs in the private harness profile rather than
+  hardcoding user plugin metadata in a public repository.
 - A successful `trigger` returns both `conversationId` and the canonical conversation URL. Trigger success means the prompt was submitted; it does not mean the assistant has finished.
 - `collect` requires `args.conversationId`. `args.conversationUrl` is optional and, when supplied, must be an `https://chatgpt.com/.../c/<conversationId>` URL matching the same ID. `args.timeoutMs` is bounded to 1-90 seconds and defaults to 60 seconds.
 - `collect` returns `status: "completed"` with the latest stable assistant text, or `status: "pending"` with any partial text when the bounded wait expires. Harness does not judge answer quality or summarize the child result.
+- `collect` accepts optional `args.settleMs` (1000–30000, default 3000). The assistant message count and text must remain unchanged for this quiet period while generation is inactive. Use a longer quiet period for multi-tool runs; still verify backend receipts independently.
 
+ChatGPT's composer can be rendered as either the legacy `#prompt-textarea`
+or a visible `[role="textbox"][contenteditable="true"]` editor.
+The trigger also supports the current composer form's submit button when the
+legacy `send-button` test ID is absent. Use an authenticated browser profile
+for real UI smoke tests; do not commit profiles, cookies or conversation IDs.
 ChatGPT actions:
 
 - `list_projects`
