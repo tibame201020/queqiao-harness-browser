@@ -8,6 +8,8 @@ Worker-side browser harness runtime for Queqiao. The core owns browser/profile l
 - **Adapter**: site-specific behavior. Built-ins: `generic`, `chatgpt`, `claude`, `mistral`, `grok`.
 - **Task rules**: remain in adapter config, target-site data sources and trigger prompts.
 
+All four chat providers implement the original `HarnessAdapter` interface (`id`, `bootstrapUrl`, `validateConfig`, `execute`) through one built-in `AdapterRegistry` and the same profile/BrowserSession/Runner lifecycle. Their shared actions are `trigger` and `collect`; Claude, Mistral and Grok also expose provider-specific readiness `status`. ChatGPT-only Project listing, cleanup and plugin selection remain optional site capabilities, not requirements imposed on other providers. The `harness_execute` compiler selects the provider and returns the existing common execution envelope; ChatGPT's low-level `collect` remains available through `harness_run`. Trigger lease and ambiguous-send handling rely on observed result state, not hardcoded provider IDs; an ambiguous result cannot be retriggered without explicit reconciliation. Provider code owns DOM, connector UI and conversation routing. This is a Browser Harness contract only; it has no external orchestrator or custom-adapter dependency.
+
 Chromium-family browsers are supported today (`chrome`, `edge`, `brave`, `chromium`). Firefox can be added behind the browser-driver boundary later.
 
 ## Public tools
