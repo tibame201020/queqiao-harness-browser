@@ -13,10 +13,12 @@ vi.mock("playwright-core", () => ({
 describe("CDP session lifecycle", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("disconnects its Playwright CDP client after a run without closing the persistent context", async () => {
-    const page = { url: () => "https://chatgpt.com/" };
+  it("creates and closes its own CDP tab without affecting user-owned tabs or context", async () => {
+    const userPage = { url: () => "https://chatgpt.com/", close: vi.fn() };
+    const page = { url: () => "about:blank", close: vi.fn().mockResolvedValue(undefined) };
     const context = {
-      pages: vi.fn().mockReturnValue([page]),
+      pages: vi.fn().mockReturnValue([userPage]),
+      newPage: vi.fn().mockResolvedValue(page),
       close: vi.fn(),
     };
     const browser = {
@@ -40,7 +42,10 @@ describe("CDP session lifecycle", () => {
     const session = await openBrowserSession(config, "unused");
 
     expect(session.page).toBe(page);
+    expect(context.newPage).toHaveBeenCalledOnce();
     await session.close();
+    expect(page.close).toHaveBeenCalledOnce();
+    expect(userPage.close).not.toHaveBeenCalled();
     expect(browser.close).toHaveBeenCalledOnce();
     expect(context.close).not.toHaveBeenCalled();
   });

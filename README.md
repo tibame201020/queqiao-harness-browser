@@ -157,7 +157,7 @@ The Parent LLM owns task decomposition, retry decisions, and result synthesis. H
 This release does **not** add a general orchestration API. `collect` is an adapter action exposed through `harness_run`; the Execution Script Contract still compiles the existing actions only. `delegate/status/cancel` remain future lifecycle work.
 ## Multi-provider web chat (Issue #9; draft)
 
-Provider adapters `claude`, `mistral`, `grok` are registered alongside the unchanged `chatgpt` and `generic` adapters. Each provider has its own bootstrap URL, composer, submit, assistant, loading, login and conversation URL selectors. Browser Harness does **not** register a new OAuth connector, share cookies between providers, or implement upstream fallback. Mistral's former Le Chat URL now serves Vibe; its deployed UI and connector-picker layout must be revalidated with the account's actual page before production promotion.
+Provider adapters `claude`, `mistral`, `grok` are registered alongside the unchanged `chatgpt` and `generic` adapters. Each provider has its own bootstrap URL, composer, submit, assistant, loading, login and conversation URL selectors. Browser Harness does **not** register a new OAuth connector, share cookies between providers, or implement upstream fallback. The authenticated 2026-10-22 UI inspection confirmed Mistral now redirects /chat to Vibe Work at /work, creates conversations at /work/<id>, uses a form-based ProseMirror editor, a visible Send submit button only after text entry, and answer parts tagged data-message-part-type=answer. Claude and Grok selectors were similarly checked against actual authenticated DOM. These are observational UI contracts and may change upstream; the opt-in connector picker itself remains unverified and must fail closed.
 
 One-shot scripts can use `task.adapter` = `claude` / `mistral` / `grok`, `task.action` = `status` / `trigger` / `collect`. Trigger example:
 
@@ -172,7 +172,7 @@ One-shot scripts can use `task.adapter` = `claude` / `mistral` / `grok`, `task.a
 }
 ```
 
-The `harness_execute` compiler assigns one independent `script-<provider>-default` profile for each provider. Low-level `harness_init` / `harness_run` also accept a named independent provider profile, including dedicated `browser.userDataDir` or a knowingly selected `cdpUrl`. The adapter's `adapterConfig` supports:
+The `harness_execute` compiler assigns one independent `script-<provider>-default` profile for each provider. Low-level `harness_init` / `harness_run` also accept a named independent provider profile, including dedicated `browser.userDataDir` or a knowingly selected `cdpUrl`. CDP attaches to an existing browser by opening its **own new tab** and closing only that tab at the end; no existing user tab is repurposed. Chrome DevTools MCP `--autoConnect` authorization is not itself a Playwright CDP HTTP endpoint: browser-mediated DevTools read-only E2E does not constitute runner-level CDP E2E. Never concurrently open the same Chrome user-data directory in managed mode or copy any authenticated profile/session into this repository. The adapter's `adapterConfig` supports:
 
 ```json
 {

@@ -13,6 +13,7 @@ export type WebChatSite = {
   send: string;
   assistant: string;
   stop: string;
+  working?: string;
   login: string;
   loading: string;
   loadError: string;
@@ -40,7 +41,7 @@ export function conversationIdentity(site: WebChatSite, raw: string): string | n
     const pieces = url.pathname.split("/").filter(Boolean);
     if (pieces.length !== 2 || !site.conversationPaths.includes(pieces[0]!)) return null;
     const id = pieces[1]!;
-    return idPattern.test(id) && id.toLowerCase() !== "new" ? id : null;
+    return idPattern.test(id) && !["new","temporary-chat"].includes(id.toLowerCase()) ? id : null;
   } catch { return null; }
 }
 export function safeConversationUrl(site: WebChatSite, raw: string, id: string): string {
@@ -146,7 +147,7 @@ async function collect(site:WebChatSite,page:Page,args:Record<string,unknown>) {
     const messages=page.locator(site.assistant);
     const count=await messages.count().catch(()=>0);
     const text=count ? await messages.nth(count-1).innerText().catch(()=>"") : "";
-    const generating=await visible(page,site.stop);
+    const generating=await visible(page,site.stop) || Boolean(site.working && await visible(page,site.working));
     const now=Date.now();
     const valid=count>0 && text.trim().length>0 && !generating;
     const unchanged:boolean=valid && count===lastCount && text.trim()===last && stableSince!==null;

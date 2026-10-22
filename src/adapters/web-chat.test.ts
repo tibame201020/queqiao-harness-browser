@@ -12,12 +12,13 @@ describe("provider-scoped chat contracts", () => {
     expect(new Set(sites.map(s => s.editor)).size).toBe(3);
   });
   it.each(sites)("rejects foreign origins and mismatched IDs: $id", (site) => {
-    expect(conversationIdentity(site, site.origin + "/chat/abcDEF12")).toBe("abcDEF12");
-    expect(conversationIdentity(site, "https://attacker.invalid/chat/abcDEF12")).toBeNull();
-    expect(conversationIdentity(site, site.origin + "/chat/new")).toBeNull();
-    expect(conversationIdentity(site, site.origin + "/chat/abcDEF12/extra")).toBeNull();
-    expect(() => safeConversationUrl(site, site.origin + "/chat/abcDEF12", "different12")).toThrow();
-    expect(safeConversationUrl(site, site.origin + "/chat/abcDEF12", "abcDEF12")).toBe(site.origin + "/chat/abcDEF12");
+    const path=site.conversationPaths[0]!;
+    expect(conversationIdentity(site, site.origin + "/" + path + "/abcDEF12")).toBe("abcDEF12");
+    expect(conversationIdentity(site, "https://attacker.invalid/" + path + "/abcDEF12")).toBeNull();
+    expect(conversationIdentity(site, site.origin + "/" + path + "/new")).toBeNull();
+    expect(conversationIdentity(site, site.origin + "/" + path + "/abcDEF12/extra")).toBeNull();
+    expect(() => safeConversationUrl(site, site.origin + "/" + path + "/abcDEF12", "different12")).toThrow();
+    expect(safeConversationUrl(site, site.origin + "/" + path + "/abcDEF12", "abcDEF12")).toBe(site.origin + "/" + path + "/abcDEF12");
   });
   it("rejects unsupported connector strategies and reused trigger targets", () => {
     expect(() => normalizeWebChatConfig({connector:{strategy:"oauth-register"}})).toThrow();
