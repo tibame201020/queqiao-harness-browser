@@ -7,19 +7,14 @@ import { bootstrapClose, bootstrapOpen } from "./core/bootstrap.js";
 import { openBrowserSession } from "./core/session.js";
 import { defaultHarnessHome, listProfiles, loadConfig, profilePaths, saveConfig } from "./core/store.js";
 import { nextSupervisorDecision } from "./core/supervisor.js";
-import { ambiguousTriggerBlocked, nextAmbiguousTrigger } from "./core/trigger-guard.js";
+import { ambiguousTriggerBlocked, nextAmbiguousTrigger, triggerMayHaveDispatched } from "./core/trigger-guard.js";
 import { executeRunLifecycle } from "./core/run-lifecycle.js";
 import { executeExecutionScript } from "./core/execution-script-runtime.js";
 import { reconcileRuntimeState } from "./core/runtime-status.js";
 import { buildHarnessOverviewEntry } from "./core/overview.js";
-import { AdapterRegistry } from "./adapters/registry.js";
-import { genericAdapter } from "./adapters/generic.js";
-import { chatgptAdapter } from "./adapters/chatgpt-adapter.js";
-import { claudeAdapter } from "./adapters/claude-adapter.js";
-import { mistralAdapter } from "./adapters/mistral-adapter.js";
-import { grokAdapter } from "./adapters/grok-adapter.js";
+import { createBuiltInRegistry } from "./adapters/builtins.js";
 
-const registry = new AdapterRegistry([genericAdapter, chatgptAdapter, claudeAdapter, mistralAdapter, grokAdapter]);
+const registry = createBuiltInRegistry();
 const home = process.env.QUEQIAO_HARNESS_HOME || defaultHarnessHome();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -46,8 +41,12 @@ async function runProfile(name: string, action?: string, args: Record<string, un
     execute: (session) => registry.execute(config.adapter, actualAction, args, { profileName: name, browser: session, config }),
     markSuccess: async (value) => {
       const updates: Record<string, unknown> = { status: "IDLE", lastAction: actualAction, lastResult: value, lastRunAt: Date.now() };
-      if (actualAction === "trigger" && (config.adapter === "chatgpt" || (value && typeof value === "object" && ["triggered", "ambiguous"].includes((value as {status?:string}).status ?? "")))) updates.lastTriggerAtMs = Date.now();
-      if (["claude","mistral","grok"].includes(config.adapter)) updates.ambiguousTrigger = nextAmbiguousTrigger(state.ambiguousTrigger === true,actualAction,value,acknowledged);
+      if (triggerMayHaveDispatched(actualAction, value)) updates.lastTriggerAtMs = Date.now();
+      // Receipt semantics are independent of the concrete HarnessAdapter id.
+      // Preserve the legacy ChatGPT state shape unless an ambiguity flag was observed.
+      if (state.ambiguousTrigger !== undefined || (value && typeof value === "object" && (value as { status?: string }).status === "ambiguous")) {
+        updates.ambiguousTrigger = nextAmbiguousTrigger(state.ambiguousTrigger === true, actualAction, value, acknowledged);
+      }
       await writeState(name, updates);
     },
     markError: (error) => writeState(name, { status: "ERROR", lastError: error instanceof Error ? error.message : String(error) }),

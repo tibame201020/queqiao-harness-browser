@@ -1,6 +1,10 @@
-const webProviders=new Set(["claude","mistral","grok"]);
-export function ambiguousTriggerBlocked(state:{ambiguousTrigger?:boolean},adapter:string,action:string,acknowledged:boolean):boolean {
-  return webProviders.has(adapter) && action==="trigger" && state.ambiguousTrigger===true && !acknowledged;
+// An ambiguous-send receipt is profile state, not a list of provider names.
+export function ambiguousTriggerBlocked(state:{ambiguousTrigger?:boolean},_adapter:string,action:string,acknowledged:boolean):boolean {
+  return action==="trigger" && state.ambiguousTrigger===true && !acknowledged;
+}
+export function triggerMayHaveDispatched(action:string,value:unknown):boolean {
+  return action==="trigger" && value!==null && typeof value==="object" &&
+    ["triggered","ambiguous"].includes((value as {status?:string}).status ?? "");
 }
 export function nextAmbiguousTrigger(previous:boolean,action:string,value:unknown,acknowledged:boolean):boolean {
   if(action!=="trigger") return previous;
