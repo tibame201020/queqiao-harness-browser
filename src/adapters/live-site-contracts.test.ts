@@ -28,6 +28,8 @@ describe("observed authenticated provider DOM contracts", () => {
   });
   it("Grok uses its actual localized form composer, submit control and /c/ URLs", () => {
     expect(grokSite.editor).toContain('form[data-composer="true"]');
+    expect(grokSite.editor).toContain('[role="combobox"]');
+    expect(grokSite.editor).toContain('[role="textbox"]');
     expect(grokSite.send).toContain('[data-testid="chat-submit"]');
     expect(grokSite.assistant).toContain('[data-testid="assistant-message"]');
     const raw="https://grok.com/c/bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";

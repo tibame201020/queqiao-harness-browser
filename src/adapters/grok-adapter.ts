@@ -1,7 +1,7 @@
 import { createWebChatAdapter, type WebChatSite } from "./web-chat.js";
 export const grokSite:WebChatSite = {
  id:"grok",origin:"https://grok.com",bootstrapUrl:"https://grok.com/",newChatUrl:"https://grok.com/",
- conversationPaths:["c"],editor:'form[data-composer="true"] [contenteditable="true"][role="textbox"]:visible',
+ conversationPaths:["c"],editor:'form[data-composer="true"] [contenteditable="true"][role="combobox"]:visible, form[data-composer="true"] [contenteditable="true"][role="textbox"]:visible',
  send:'form[data-composer="true"] button[data-testid="chat-submit"][type="submit"]:visible',
  assistant:'[data-testid="assistant-message"]',
  stop:'button[aria-label*="Stop" i]:visible, button[aria-label*="停止"]:visible, button[data-testid*="stop"]:visible',
