@@ -8,7 +8,8 @@ export type BrowserSession = { context: BrowserContext; page: Page; close(): Pro
 
 export async function openBrowserSession(config: HarnessConfig, home: string): Promise<BrowserSession> {
   if (config.browser.connection === "cdp") {
-    const browser = await chromium.connectOverCDP(config.browser.cdpUrl!);
+    // Do not apply Playwright default overrides to an attached daily-driver browser.
+    const browser = await chromium.connectOverCDP(config.browser.cdpUrl!, { noDefaults: true });
     const context = browser.contexts()[0];
     if (!context) {
       await browser.close();

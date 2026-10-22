@@ -43,6 +43,7 @@ describe("CDP session lifecycle", () => {
 
     expect(session.page).toBe(page);
     expect(context.newPage).toHaveBeenCalledOnce();
+    expect(chromium.connectOverCDP).toHaveBeenCalledWith("http://127.0.0.1:9555", { noDefaults: true });
     await session.close();
     expect(page.close).toHaveBeenCalledOnce();
     expect(userPage.close).not.toHaveBeenCalled();
