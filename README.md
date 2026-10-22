@@ -155,6 +155,41 @@ Parent LLM -> trigger -> child ChatGPT conversation -> collect -> Parent LLM syn
 The Parent LLM owns task decomposition, retry decisions, and result synthesis. Harness only owns deterministic browser/session execution and result collection. The verified POC used `harness_run` with an explicit ChatGPT/CDP profile: `trigger` returned the child conversation identity and `collect` returned the child assistant response end-to-end.
 
 This release does **not** add a general orchestration API. `collect` is an adapter action exposed through `harness_run`; the Execution Script Contract still compiles the existing actions only. `delegate/status/cancel` remain future lifecycle work.
+## Multi-provider web chat (Issue #9; draft)
+
+Provider adapters `claude`, `mistral`, `grok` are registered alongside the unchanged `chatgpt` and `generic` adapters. Each provider has its own bootstrap URL, composer, submit, assistant, loading, login and conversation URL selectors. Browser Harness does **not** register a new OAuth connector, share cookies between providers, or implement upstream fallback. Mistral's former Le Chat URL now serves Vibe; its deployed UI and connector-picker layout must be revalidated with the account's actual page before production promotion.
+
+One-shot scripts can use `task.adapter` = `claude` / `mistral` / `grok`, `task.action` = `status` / `trigger` / `collect`. Trigger example:
+
+```json
+{
+  "version": "1", "execution": { "mode": "once" },
+  "task": {
+    "adapter": "claude", "action": "trigger",
+    "target": { "conversation": { "mode": "new" } },
+    "input": { "prompt": "Use your already connected Queqiao MCP to call list_workspaces and read_file, then report the exact first line." }
+  }
+}
+```
+
+The `harness_execute` compiler assigns one independent `script-<provider>-default` profile for each provider. Low-level `harness_init` / `harness_run` also accept a named independent provider profile, including dedicated `browser.userDataDir` or a knowingly selected `cdpUrl`. The adapter's `adapterConfig` supports:
+
+```json
+{
+  "conversation": { "newChatEachRun": true },
+  "connector": { "strategy": "preconnected", "name": "Queqiao" },
+  "trigger": { "prompt": "..." }
+}
+```
+
+`preconnected` means the site account was authorized by the user previously, **not** that the Harness has independently proved it. The trigger receipt explicitly returns `connectorVerification: "unverified_until_tool_result"`; only a real observed child tool result can establish that Queqiao was actually used. Opt-in `strategy: "picker"` attempts the provider-specific existing-connector UI and returns `selected_in_ui` only on its selection evidence, otherwise `CONNECTOR_NOT_SELECTED` / `CONNECTOR_UI_UNAVAILABLE`. No adapter performs OAuth registration. These DOM paths may require an account-specific site revalidation. Use a headed bootstrap for one-time login and close the bootstrap browser before launching another managed action. Do not commit the resulting profiles or diagnostics.
+
+`harness_run` / `harness_execute` retain their existing outer transport envelope (`status: \"ok\"`, `action`, `result`): upstream MUST inspect `result.status`, not mistake transport success for Provider success.\n\nA `trigger` result is `{status:"triggered",provider,conversationId,conversationUrl,connectorVerification}` only when the provider's conversation URL is independently observed following a single submit. After a potentially dispatched click fails or its identity cannot be confirmed, the result is `{status:"ambiguous",reason:"SEND_OUTCOME_UNKNOWN"|"CONVERSATION_ID_NOT_CONFIRMED",retryable:false}`: **never automatically retry or replay that prompt**. The per-profile state persists an `ambiguousTrigger` guard across later status/collect calls. Another `trigger` returns `blocked/UNRECONCILED_AMBIGUOUS_TRIGGER` even with `force`; only an explicit low-level `harness_run` trigger with `args.acknowledgeAmbiguous=true` after external reconciliation unlocks it. `harness_execute` does not expose that acknowledgement. A pre-send navigation/login/composer/connector failure is `unavailable` with a machine-readable `reason`. A temporary site load failure is `unavailable` with `retryable:true`, and is not a completed answer.
+
+Pass the exact returned `conversationId` and `conversationUrl` to `harness_run({name,action:"collect",args:{conversationId,conversationUrl,timeoutMs:60000,settleMs:3000}})`. The `collect` action rejects any foreign host, ID mismatch, query/fragment or unsupported provider route; it never guesses a different conversation. Results are `completed` with `text` after a stable quiet interval; `generating` or `pending` with `partialText` on a bounded timeout; or `unavailable` with the failure reason. A site UI error never becomes `completed`. A real Cloudflare verification page returns `unavailable/SITE_CHALLENGE` (manual profile intervention required); the adapter never tries to bypass it. The upper layer must check the returned file marker and other task-specific evidence itself. `collect` is read-only with respect to the child conversation and must not trigger again.
+
+No generic ChatGPT Project, @ mention, cleanup, retention or reuse semantics are applied to these providers. Existing `chatgpt` config and `script-chatgpt-default` browser profile are unchanged. On upgrade: install the new package / staged extension through the existing detach / uninstall / install / attach procedure; a staged `dist/runner.js` is pinned by its host and is **not** switched merely by changing TypeScript source. Bootstrap and authorize **each** provider's own persistent profile once before attempting live Trigger/Collect. No automatic migration or copying of any original browser profile / token / cookie.
+
 ## Generic adapter
 
 `open` navigates to an HTTP(S) URL and optionally waits for a selector. This is the reference that proves the core runtime is site-agnostic.
