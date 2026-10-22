@@ -5,7 +5,7 @@ Worker-side browser harness runtime for Queqiao. The core owns browser/profile l
 ## Mental model
 
 - **Core runtime**: profile init, headed bootstrap, headless run, browser lifecycle, state, lease and interval supervisor.
-- **Adapter**: site-specific behavior. Built-ins: `generic`, `chatgpt`.
+- **Adapter**: site-specific behavior. Built-ins: `generic`, `chatgpt`, `claude`, `mistral`, `grok`.
 - **Task rules**: remain in adapter config, target-site data sources and trigger prompts.
 
 Chromium-family browsers are supported today (`chrome`, `edge`, `brave`, `chromium`). Firefox can be added behind the browser-driver boundary later.
@@ -155,6 +155,43 @@ Parent LLM -> trigger -> child ChatGPT conversation -> collect -> Parent LLM syn
 The Parent LLM owns task decomposition, retry decisions, and result synthesis. Harness only owns deterministic browser/session execution and result collection. The verified POC used `harness_run` with an explicit ChatGPT/CDP profile: `trigger` returned the child conversation identity and `collect` returned the child assistant response end-to-end.
 
 This release does **not** add a general orchestration API. `collect` is an adapter action exposed through `harness_run`; the Execution Script Contract still compiles the existing actions only. `delegate/status/cancel` remain future lifecycle work.
+## Multi-provider web chat (Issue #9)
+
+Provider adapters `claude`, `mistral`, `grok` are registered alongside the unchanged `chatgpt` and `generic` adapters. Each provider has its own bootstrap URL, composer, submit, assistant, loading, login and conversation URL selectors. Browser Harness does **not** register a new OAuth connector, share cookies between providers, or implement upstream fallback. The authenticated 2026-10-22 UI inspection confirmed Mistral now redirects /chat to Vibe Work at /work, creates conversations at /work/<id>, uses a form-based ProseMirror editor, a visible Send submit button only after text entry, and answer parts tagged data-message-part-type=answer. Claude and Grok selectors were similarly checked against actual authenticated DOM; the Grok composer has been observed with either `role="textbox"` or `role="combobox"` across authenticated profile instances, so the adapter accepts both. These are observational UI contracts and may change upstream; the opt-in connector picker itself remains unverified and must fail closed.
+
+One-shot scripts can use `task.adapter` = `claude` / `mistral` / `grok`, `task.action` = `status` / `trigger` / `collect`. Trigger example:
+
+```json
+{
+  "version": "1", "execution": { "mode": "once" },
+  "task": {
+    "adapter": "claude", "action": "trigger",
+    "target": { "conversation": { "mode": "new" } },
+    "input": { "prompt": "Use your already connected Queqiao MCP to call list_workspaces and read_file, then report the exact first line." }
+  }
+}
+```
+
+The `harness_execute` compiler assigns one independent `script-<provider>-default` profile for each provider. Low-level `harness_init` / `harness_run` also accept a named independent provider profile, including dedicated `browser.userDataDir` or a knowingly selected `cdpUrl`. CDP attaches to an existing browser by opening its **own new tab** and closing only that tab at the end; no existing user tab is repurposed. Chrome DevTools MCP `--autoConnect` authorization is not itself a Playwright CDP HTTP endpoint: browser-mediated DevTools read-only E2E does not constitute runner-level CDP E2E. With Playwright Core >=1.63, an explicitly authorized Chrome 144+ `chrome://inspect/#remote-debugging` browser can be addressed as `"connection":"cdp","cdpUrl":"chrome"` (instead of assuming a fixed local HTTP port). Chrome may require **additional user approval** for a new Playwright client; a previously approved DevTools MCP client does not grant blanket consent. CDP attachment uses `noDefaults:true` to preserve user browser settings. Do not automate approval or claim E2E PASS on an unconnected browser. Never concurrently open the same Chrome user-data directory in managed mode or copy any authenticated profile/session into this repository. The adapter's `adapterConfig` supports:
+
+```json
+{
+  "conversation": { "newChatEachRun": true },
+  "connector": { "strategy": "preconnected", "name": "Queqiao" },
+  "trigger": { "prompt": "..." }
+}
+```
+
+`preconnected` means the site account was authorized by the user previously, **not** that the Harness has independently proved it. The trigger receipt explicitly returns `connectorVerification: "unverified_until_tool_result"`; only a real observed child tool result can establish that Queqiao was actually used. Opt-in `strategy: "picker"` attempts the provider-specific existing-connector UI and returns `selected_in_ui` only on its selection evidence, otherwise `CONNECTOR_NOT_SELECTED` / `CONNECTOR_UI_UNAVAILABLE`. No adapter performs OAuth registration. These DOM paths may require an account-specific site revalidation. Use a headed bootstrap for one-time login and close the bootstrap browser before launching another managed action. Do not commit the resulting profiles or diagnostics.
+
+`harness_run` / `harness_execute` retain their existing outer transport envelope (`status: \"ok\"`, `action`, `result`): upstream MUST inspect `result.status`, not mistake transport success for Provider success.
+
+A `trigger` result is `{status:"triggered",provider,conversationId,conversationUrl,connectorVerification}` only when the provider's conversation URL is independently observed following a single submit. After a potentially dispatched click fails or its identity cannot be confirmed, the result is `{status:"ambiguous",reason:"SEND_OUTCOME_UNKNOWN"|"CONVERSATION_ID_NOT_CONFIRMED",retryable:false}`: **never automatically retry or replay that prompt**. The per-profile state persists an `ambiguousTrigger` guard across later status/collect calls. Another `trigger` returns `blocked/UNRECONCILED_AMBIGUOUS_TRIGGER` even with `force`; only an explicit low-level `harness_run` trigger with `args.acknowledgeAmbiguous=true` after external reconciliation unlocks it. `harness_execute` does not expose that acknowledgement. A pre-send navigation/login/composer/connector failure is `unavailable` with a machine-readable `reason`. A temporary site load failure is `unavailable` with `retryable:true`, and is not a completed answer.
+
+Pass the exact returned `conversationId` and `conversationUrl` to `harness_run({name,action:"collect",args:{conversationId,conversationUrl,timeoutMs:60000,settleMs:3000}})`. The `collect` action rejects any foreign host, ID mismatch, query/fragment or unsupported provider route; it never guesses a different conversation. Results are `completed` with `text` after a stable quiet interval; `generating` or `pending` with `partialText` on a bounded timeout; or `unavailable` with the failure reason. A site UI error never becomes `completed`. A real Cloudflare verification page returns `unavailable/SITE_CHALLENGE` (manual profile intervention required); the adapter never tries to bypass it. The upper layer must check the returned file marker and other task-specific evidence itself. `collect` is read-only with respect to the child conversation and must not trigger again.
+
+No generic ChatGPT Project, @ mention, cleanup, retention or reuse semantics are applied to these providers. Existing `chatgpt` config and `script-chatgpt-default` browser profile are unchanged. On upgrade: install the new package / staged extension through the existing detach / uninstall / install / attach procedure; a staged `dist/runner.js` is pinned by its host and is **not** switched merely by changing TypeScript source. Bootstrap and sign in to **each** provider's own persistent profile once before attempting live Trigger/Collect. Pre-existing account-level Queqiao MCP authorization is checked by the subsequent real read-only child tool result; Harness does not add, configure or authorize the connector. For live tests, use `harness_init` + `harness_bootstrap(open)` with separate managed profiles, then attach each running setup Chrome through its explicit local CDP endpoint for `status` / `trigger` / `collect`. Do not run a second managed Chrome against a profile already opened for setup. The 2026-10-22 compiled-runner live smoke completed all three providers with exact test-only fixture-marker matches; a transient Mistral navigation problem was recovered by the supported bootstrap close/open of its own dedicated browser, followed only by a read-only collect of the existing conversation (no duplicate trigger). These are per-provider acceptance observations, not a guarantee of upstream UI stability. No automatic migration or copying of any original browser profile / token / cookie.
+
 ## Generic adapter
 
 `open` navigates to an HTTP(S) URL and optionally waits for a selector. This is the reference that proves the core runtime is site-agnostic.

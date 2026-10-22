@@ -41,6 +41,16 @@ const chatTriggerTargetSchema = z.object({ project: projectSchema, conversation:
 const chatCleanupTargetSchema = z.object({ project: z.object({ mode: z.literal("existing"), name: z.string().min(1).max(256) }).strict() }).strict();
 const genericOpenInputSchema = z.object({ url: z.string().url().refine((value) => /^https?:\/\//i.test(value), "must use http(s)"), waitForSelector: z.string().min(1).optional() }).strict();
 const chatTriggerInputSchema = z.object({ prompt: z.string().min(1).max(200_000) }).strict();
+const webTriggerInputSchema = z.object({
+  prompt: z.string().min(1).max(200_000),
+  connector: z.object({ strategy: z.enum(["preconnected", "picker"]), name: z.string().min(1).max(80).optional() }).strict().optional()
+}).strict();
+const webCollectInputSchema = z.object({
+  conversationId: z.string().min(8).max(128),
+  conversationUrl: z.string().url(),
+  timeoutMs: z.number().int().min(1000).max(90000).optional(),
+  settleMs: z.number().int().min(1000).max(30000).optional()
+}).strict();
 const cleanupInputSchema = z.object({ apply: z.boolean().default(false) }).strict();
 const emptyInputSchema = z.object({}).strict();
 
@@ -80,6 +90,37 @@ export function compileExecutionScript(input: unknown): CompiledExecutionScript 
     if (data.waitForSelector) adapterConfig.waitForSelector = data.waitForSelector;
     const config = normalizeHarnessConfig({ name: executionId, adapter: "generic", defaultAction: "open", browser: { engine: "chromium", channel: "chrome", headless: true, startMinimized: true, connection: "managed" }, schedule, adapterConfig });
     return { executionId, mode: script.execution.mode, action: "open", args: {}, config };
+  }
+
+  if (["claude", "mistral", "grok"].includes(script.task.adapter)) {
+    const provider = script.task.adapter;
+    const browser = { engine: "chromium" as const, channel: "chrome" as const, headless: false, startMinimized: true, connection: "managed" as const };
+    if (script.task.retention) unsupported("task.retention", `${provider} does not implement Project retention`);
+    if (script.task.action === "trigger") {
+      if (script.task.target !== undefined) {
+        const target = parseOrInvalid(z.object({ conversation: z.object({ mode: z.literal("new") }).strict() }).strict(), script.task.target, "task.target");
+        void target;
+      }
+      const data = parseOrInvalid(webTriggerInputSchema, script.task.input, "task.input");
+      const config = normalizeHarnessConfig({
+        name: executionId, adapter: provider, defaultAction: "trigger", browser, schedule,
+        adapterConfig: { trigger: { prompt: data.prompt }, connector: data.connector ?? {strategy:"preconnected",name:"Queqiao"} }
+      });
+      return {executionId, mode: script.execution.mode, action: "trigger", args: {}, config};
+    }
+    if (script.task.action === "collect") {
+      if (script.execution.mode === "interval") unsupported("task.action", `${provider} collect is one-shot only`);
+      const data = parseOrInvalid(webCollectInputSchema, script.task.input, "task.input");
+      const config = normalizeHarnessConfig({name:executionId,adapter:provider,defaultAction:"collect",browser,schedule,adapterConfig:{}});
+      return {executionId,mode:"once",action:"collect",args:data,config};
+    }
+    if (script.task.action === "status") {
+      if (script.execution.mode === "interval") unsupported("task.action", `${provider} status is one-shot only`);
+      parseOrInvalid(emptyInputSchema,script.task.input,"task.input");
+      const config = normalizeHarnessConfig({name:executionId,adapter:provider,defaultAction:"status",browser,schedule,adapterConfig:{}});
+      return {executionId,mode:"once",action:"status",args:{},config};
+    }
+    unsupported("task.action", `unsupported ${provider} action: ${script.task.action}`);
   }
 
   if (script.task.adapter !== "chatgpt") unsupported("task.adapter", `unsupported adapter: ${script.task.adapter}`);

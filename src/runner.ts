@@ -7,6 +7,7 @@ import { bootstrapClose, bootstrapOpen } from "./core/bootstrap.js";
 import { openBrowserSession } from "./core/session.js";
 import { defaultHarnessHome, listProfiles, loadConfig, profilePaths, saveConfig } from "./core/store.js";
 import { nextSupervisorDecision } from "./core/supervisor.js";
+import { ambiguousTriggerBlocked, nextAmbiguousTrigger } from "./core/trigger-guard.js";
 import { executeRunLifecycle } from "./core/run-lifecycle.js";
 import { executeExecutionScript } from "./core/execution-script-runtime.js";
 import { reconcileRuntimeState } from "./core/runtime-status.js";
@@ -14,8 +15,11 @@ import { buildHarnessOverviewEntry } from "./core/overview.js";
 import { AdapterRegistry } from "./adapters/registry.js";
 import { genericAdapter } from "./adapters/generic.js";
 import { chatgptAdapter } from "./adapters/chatgpt-adapter.js";
+import { claudeAdapter } from "./adapters/claude-adapter.js";
+import { mistralAdapter } from "./adapters/mistral-adapter.js";
+import { grokAdapter } from "./adapters/grok-adapter.js";
 
-const registry = new AdapterRegistry([genericAdapter, chatgptAdapter]);
+const registry = new AdapterRegistry([genericAdapter, chatgptAdapter, claudeAdapter, mistralAdapter, grokAdapter]);
 const home = process.env.QUEQIAO_HARNESS_HOME || defaultHarnessHome();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -29,6 +33,8 @@ async function runProfile(name: string, action?: string, args: Record<string, un
   const config = await loadConfig(home, name);
   const actualAction = action || config.defaultAction;
   const state = await readState(name);
+  const acknowledged = args.acknowledgeAmbiguous === true;
+  if (ambiguousTriggerBlocked(state, config.adapter, actualAction, acknowledged)) return {status:"blocked",reason:"UNRECONCILED_AMBIGUOUS_TRIGGER",provider:config.adapter};
   if (!force && actualAction === "trigger") {
     const decision = nextSupervisorDecision({ nowMs: Date.now(), lastTriggerAtMs: state.lastTriggerAtMs, leaseMs: config.runPolicy.leaseMinutes * 60000 });
     if (decision.kind === "busy") return { status: "busy", retryAfterMs: decision.retryAfterMs };
@@ -40,7 +46,8 @@ async function runProfile(name: string, action?: string, args: Record<string, un
     execute: (session) => registry.execute(config.adapter, actualAction, args, { profileName: name, browser: session, config }),
     markSuccess: async (value) => {
       const updates: Record<string, unknown> = { status: "IDLE", lastAction: actualAction, lastResult: value, lastRunAt: Date.now() };
-      if (actualAction === "trigger") updates.lastTriggerAtMs = Date.now();
+      if (actualAction === "trigger" && (config.adapter === "chatgpt" || (value && typeof value === "object" && ["triggered", "ambiguous"].includes((value as {status?:string}).status ?? "")))) updates.lastTriggerAtMs = Date.now();
+      if (["claude","mistral","grok"].includes(config.adapter)) updates.ambiguousTrigger = nextAmbiguousTrigger(state.ambiguousTrigger === true,actualAction,value,acknowledged);
       await writeState(name, updates);
     },
     markError: (error) => writeState(name, { status: "ERROR", lastError: error instanceof Error ? error.message : String(error) }),

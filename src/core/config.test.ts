@@ -18,6 +18,12 @@ describe("normalizeHarnessConfig", () => {
     expect(() => normalizeHarnessConfig({ name: "demo", adapter: "generic", schedule: { type: "interval" } as any })).toThrow(/intervalMinutes/);
   });
 
+  it("accepts the Chrome 144+ authorized local debugging channel but rejects arbitrary channel aliases", () => {
+    const cfg = normalizeHarnessConfig({ name: "chrome-channel", adapter: "claude", browser: { connection: "cdp", cdpUrl: "chrome", headless: false, startMinimized: true } });
+    expect(cfg.browser.cdpUrl).toBe("chrome");
+    expect(() => normalizeHarnessConfig({ name: "bad-channel", adapter: "claude", browser: { connection: "cdp", cdpUrl: "arbitrary-profile", headless: false, startMinimized: true } })).toThrow();
+  });
+
   it("keeps adapter config opaque to the browser core", () => {
     const cfg = normalizeHarnessConfig({ name: "demo", adapter: "chatgpt", adapterConfig: { projectName: "X" } });
     expect(cfg.adapterConfig).toEqual({ projectName: "X" });

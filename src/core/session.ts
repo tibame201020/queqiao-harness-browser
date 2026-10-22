@@ -8,17 +8,20 @@ export type BrowserSession = { context: BrowserContext; page: Page; close(): Pro
 
 export async function openBrowserSession(config: HarnessConfig, home: string): Promise<BrowserSession> {
   if (config.browser.connection === "cdp") {
-    const browser = await chromium.connectOverCDP(config.browser.cdpUrl!);
+    // Do not apply Playwright default overrides to an attached daily-driver browser.
+    const browser = await chromium.connectOverCDP(config.browser.cdpUrl!, { noDefaults: true });
     const context = browser.contexts()[0];
     if (!context) {
       await browser.close();
       throw new Error("CDP browser has no context");
     }
     try {
-      const page = context.pages()[0] ?? await context.newPage();
-      // For a CDP-attached Browser, close() disconnects Playwright;
-      // it does not shut down the persistent user-owned Chrome process.
-      return { context, page, close: async () => browser.close() };
+      // Do not hijack any existing user-owned tab. Own one new tab per run.
+      const page = await context.newPage();
+      // Close our tab, then disconnect; keep the persistent context and Chrome alive.
+      return { context, page, close: async () => {
+        try { await page.close(); } finally { await browser.close(); }
+      } };
     } catch (error) {
       await browser.close();
       throw error;

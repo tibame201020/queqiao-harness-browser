@@ -17,7 +17,8 @@ export const harnessConfigInputSchema = z.object({
     headless: z.boolean().default(true),
     startMinimized: z.boolean().default(true),
     connection: z.enum(["managed", "cdp"]).default("managed"),
-    cdpUrl: z.string().url().optional(),
+    // Chrome 144+ can expose the user-approved chrome://inspect debugging bridge by channel name.
+    cdpUrl: z.union([z.literal("chrome"), z.string().url()]).optional(),
     debugPort: z.number().int().min(1024).max(65535).optional(),
     startUrl: z.string().url().optional(),
   }).default({ engine: "chromium", channel: "chrome", headless: true, startMinimized: true, connection: "managed" }),

@@ -31,7 +31,7 @@
     "node": ">=22.19 <25"
   },
   "dependencies": {
-    "playwright-core": "^1.55.0",
+    "playwright-core": "1.63.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
