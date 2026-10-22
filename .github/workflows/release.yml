@@ -9,6 +9,11 @@ on:
         description: Existing release tag to publish
         required: true
         type: string
+      publish_mode:
+        description: Auto (direct then stage on authorization rejection), direct, or stage
+        type: choice
+        options: [auto, direct, stage]
+        default: auto
 
 permissions:
   contents: read
@@ -25,6 +30,7 @@ jobs:
     timeout-minutes: 20
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      PUBLISH_MODE: ${{ inputs.publish_mode || 'auto' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -79,6 +85,27 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Publish public package with trusted publishing
+      - name: Publish or stage with trusted publishing
         if: steps.registry.outputs.exists != 'true'
-        run: npm publish --provenance --access public
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$PUBLISH_MODE" in auto|direct|stage) ;; *) echo "::error::Unknown publishing mode"; exit 2 ;; esac
+          if [ "$PUBLISH_MODE" != stage ]; then
+            publish_log="$RUNNER_TEMP/npm-publish.log"
+            set +e
+            npm publish --provenance --access public --ignore-scripts 2>&1 | tee "$publish_log"
+            publish_status=${PIPESTATUS[0]}
+            set -e
+            if [ "$publish_status" -eq 0 ]; then
+              echo "Package accepted for direct publishing" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            if [ "$PUBLISH_MODE" = direct ] || ! grep -Eqi 'E404|ENEEDAUTH|not authorized' "$publish_log"; then
+              exit "$publish_status"
+            fi
+            echo "::warning::Direct publish rejected; trying the separately authorized npm staged publishing operation."
+          fi
+          npm stage publish --provenance --access public --ignore-scripts
+          echo "::notice::Package staged, pending maintainer 2FA approval; it is NOT published to the public registry."
+          echo "Package staged, pending maintainer 2FA approval. It is NOT yet available from npm; approve this exact version in npm Staged Packages and verify the public registry afterwards." >> "$GITHUB_STEP_SUMMARY"

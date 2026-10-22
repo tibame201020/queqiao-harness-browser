@@ -225,8 +225,10 @@ The release job checks out the immutable release tag, verifies that the tag poin
 Release sequence:
 
 ```text
-merge main -> main CI green -> create vX.Y.Z tag -> publish GitHub Release -> release workflow -> npm publish --provenance
+merge main -> main CI green -> create vX.Y.Z tag -> publish GitHub Release -> release workflow -> direct npm publish OR npm stage publish
 ```
+
+The release workflow supports `workflow_dispatch` `publish_mode=auto|direct|stage` for the same immutable tag. `auto` attempts direct Trusted Publishing and only tries the separately authorized staged operation after an authorization-style rejection. To use an existing stage-only Trusted Publisher, dispatch `tag=v0.5.0` with `publish_mode=stage`. A successful `npm stage publish` means **pending maintainer 2FA approval**, not public npm availability: approve the exact version in npm Staged Packages, then verify the Registry version and `latest` dist-tag independently. Do not copy tokens or use a fallback local account publish.
 
 Do not manually publish a version that is intended to be released by this workflow.
 

@@ -20,6 +20,17 @@ describe("release workflow contract", () => {
     expect(workflow).toContain("package.json");
   });
 
+  it("supports previously authorized stage-only trusted publishers without claiming staged versions are public", () => {
+    expect(workflow).toContain("publish_mode:");
+    expect(workflow).toContain('PUBLISH_MODE: ${{ inputs.publish_mode || \'auto\' }}');
+    expect(workflow).toContain('npm stage publish --provenance --access public --ignore-scripts');
+    expect(workflow).toContain('npm publish --provenance --access public --ignore-scripts');
+    expect(workflow).toContain('pending maintainer 2FA approval');
+    expect(workflow).toContain('npm view "$name@$version" version');
+    expect(workflow).not.toContain('npm stage approve');
+    expect(workflow).not.toContain('NODE_AUTH_TOKEN');
+  });
+
   it("runs release verification and skips already-published versions before provenance publish", () => {
     expect(workflow).toContain("npm run check");
     expect(workflow).toContain("npm audit --omit=dev --audit-level=moderate");
