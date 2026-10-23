@@ -7,6 +7,7 @@ import {
   conversationIdFromHref,
   initialAssistantCollectState,
 } from "./chatgpt.js";
+import { ChatGptSendError, isChatGptGenerationActive, postClickAmbiguity, sendChatGptPrompt } from "./chatgpt-send.js";
 import { deleteConversation, listProjectConversations, listProjects, openConversation, openProject, projectConversationUrl, startProjectNewConversation } from "./chatgpt-projects.js";
 
 const conversationIdSchema = z.string().uuid();
@@ -160,39 +161,33 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
 
   const target = await prepareTriggerTarget(session, cfg);
   const page = session.page;
-  // Support both legacy and current ChatGPT editor layouts.
-  const composer = page.locator('#prompt-textarea:visible, [role="textbox"][contenteditable="true"]:visible').first();
-  await composer.waitFor({ state: "visible", timeout: 15_000 });
-  await composer.click();
-  await page.keyboard.insertText(prompt);
-  const send = page.locator('[data-testid="send-button"]:visible, form:has([role="textbox"][contenteditable="true"]) button[type="submit"]:visible').first();
-  await send.waitFor({ state: "visible", timeout: 10_000 });
-  await send.click();
+  let started: number;
+  try {
+    started = await sendChatGptPrompt(page, prompt, cfg.conversation.newChatEachRun ? undefined : cfg.conversation.conversationId);
+  } catch (error) {
+    if (!(error instanceof ChatGptSendError)) throw error;
+    return error.code === "DISPATCH_AMBIGUOUS"
+      ? { status: "ambiguous", reason: "SEND_OUTCOME_UNKNOWN", retryable: false, diagnostic: error.diagnostic }
+      : { status: "unavailable", reason: "PRE_SEND_NOT_READY", retryable: true, diagnostic: error.diagnostic };
+  }
 
-
-  if (cfg.conversation.newChatEachRun) {
-    await page.waitForURL(/\/c\/[0-9a-f-]{36}/i, { timeout: 8_000 });
+  // Returning a structured ambiguous receipt lets the existing generic Runner persist its replay guard.
+  const notConfirmed = async () => {
+    const error = await postClickAmbiguity(page, started, cfg.conversation.conversationId ?? null);
+    return { status: "ambiguous", reason: "CONVERSATION_ID_NOT_CONFIRMED", retryable: false, diagnostic: error.diagnostic };
+  };
+  try {
+    if (cfg.conversation.newChatEachRun) {
+      await page.waitForURL(/\/c\/[0-9a-f-]{36}/i, { timeout: 8_000 });
+    }
+  } catch {
+    return notConfirmed();
   }
   const transientUrl = page.url();
-  const conversationId = conversationIdFromHref(transientUrl) ?? cfg.conversation.conversationId ?? null;
-  if (!conversationId) throw new Error(`Unable to resolve ChatGPT conversation id after trigger: ${transientUrl}`);
+  const conversationId = conversationIdFromHref(transientUrl);
+  if (!conversationId || (!cfg.conversation.newChatEachRun && conversationId !== cfg.conversation.conversationId)) return notConfirmed();
   const url = target.projectId ? projectConversationUrl(target.projectId, conversationId) : transientUrl;
   return { status: "triggered", url, conversationId };
-}
-
-async function isGenerationActive(session: BrowserSession): Promise<boolean> {
-  const page = session.page;
-  const selectors = [
-    '[data-testid="stop-button"]',
-    'button[aria-label="Stop generating"]',
-    'button[aria-label="停止產生"]',
-    'button[aria-label="停止生成"]',
-  ];
-  for (const selector of selectors) {
-    const locator = page.locator(selector).first();
-    if (await locator.isVisible().catch(() => false)) return true;
-  }
-  return false;
 }
 
 async function collect(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>) {
@@ -229,7 +224,7 @@ async function collect(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
     const latestText = assistantCount > 0
       ? await assistantMessages.nth(assistantCount - 1).innerText().catch(() => "")
       : "";
-    const generating = await isGenerationActive(session);
+    const generating = await isChatGptGenerationActive(page);
 
     state = advanceAssistantCollectScan(state, { assistantCount, latestText, generating }, Date.now(), input.settleMs);
     if (state.done) {

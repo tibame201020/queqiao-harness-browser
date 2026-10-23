@@ -1,0 +1,196 @@
+import type { Locator, Page } from "playwright-core";
+import { conversationIdFromHref } from "./chatgpt.js";
+
+const COMPOSER = '#prompt-textarea:visible, [role="textbox"][contenteditable="true"]:visible';
+const FORM_SEND = '[data-testid="send-button"], button[type="submit"]';
+const FORM_SEND_VISIBLE = '[data-testid="send-button"]:visible, button[type="submit"]:visible';
+const LEGACY_SEND = '[data-testid="send-button"]';
+const LEGACY_SEND_VISIBLE = '[data-testid="send-button"]:visible';
+const GENERATION = [
+  '[data-testid="stop-button"]',
+  'button[aria-label="Stop generating"]',
+  'button[aria-label="停止產生"]',
+  'button[aria-label="停止生成"]',
+];
+
+type Stage = "precompose" | "presend" | "click" | "postclick";
+type SendSelection = { locator: Locator | null; selector: "form" | "legacy" | "none"; count: number; visibleCount: number };
+type Readiness = {
+  stage: Stage;
+  elapsedMs: number;
+  url: string;
+  conversationId: string | null;
+  sameTarget: boolean;
+  generationActive: boolean;
+  composerMatches: number;
+  composerVisible: boolean;
+  composerEditable: boolean;
+  promptPresent: boolean | null;
+  sendSelector: SendSelection["selector"];
+  sendMatches: number;
+  sendVisibleMatches: number;
+  sendVisible: boolean;
+  sendEnabled: boolean;
+  sendActionable: boolean;
+};
+
+function safeUrl(page: Page): { url: string; id: string | null } {
+  try {
+    const parsed = new URL(page.url());
+    if (parsed.protocol !== "https:" || parsed.hostname !== "chatgpt.com") return { url: "unexpected-origin", id: null };
+    // Never retain query/hash: URLs can contain transient parameters.
+    return { url: parsed.origin + parsed.pathname, id: conversationIdFromHref(parsed.pathname) };
+  } catch {
+    return { url: "invalid-url", id: null };
+  }
+}
+
+export async function isChatGptGenerationActive(page: Page): Promise<boolean> {
+  for (const selector of GENERATION) {
+    if (await page.locator(selector).first().isVisible().catch(() => false)) return true;
+  }
+  return false;
+}
+
+async function selectSend(page: Page, composer: Locator | null, composerMatches: number): Promise<SendSelection> {
+  if (composer && composerMatches === 1) {
+    const form = composer.locator('xpath=ancestor::form[1]');
+    if (await form.count().catch(() => 0)) {
+      const inForm = form.locator(FORM_SEND);
+      const count = await inForm.count().catch(() => 0);
+      if (count) {
+        const visible = form.locator(FORM_SEND_VISIBLE);
+        const visibleCount = await visible.count().catch(() => 0);
+        const locator = visibleCount === 1 ? visible.first() : (count === 1 ? inForm.first() : null);
+        return { locator, selector: "form", count, visibleCount };
+      }
+    }
+  }
+  // Count raw legacy matches even when hidden or the composer is missing (diagnostic only).
+  const legacy = page.locator(LEGACY_SEND);
+  const count = await legacy.count().catch(() => 0);
+  const visible = page.locator(LEGACY_SEND_VISIBLE);
+  const visibleCount = await visible.count().catch(() => 0);
+  const locator = composerMatches === 1 && composer && (
+    visibleCount === 1 ? visible.first() : (count === 1 ? legacy.first() : null)
+  ) || null;
+  return { locator, selector: count ? "legacy" : "none", count, visibleCount };
+}
+
+function sameTarget(page: Page, expectedId: string | null, initialId: string | null): boolean {
+  const current = safeUrl(page);
+  return current.url !== "unexpected-origin" && current.url !== "invalid-url"
+    && (!expectedId || current.id === expectedId)
+    && current.id === initialId;
+}
+
+async function inspect(page: Page, stage: Stage, started: number, initialId: string | null,
+  expectedId: string | null, prompt?: string): Promise<{ state: Readiness; composer: Locator | null; send: Locator | null }> {
+  const composers = page.locator(COMPOSER);
+  const composerMatches = await composers.count().catch(() => 0);
+  const composer = composerMatches === 1 ? composers.first() : null;
+  const composerVisible = !!composer && await composer.isVisible().catch(() => false);
+  const composerEditable = composerVisible && !!composer && await composer.isEditable().catch(() => false);
+  const promptPresent = prompt === undefined ? null : !!composer && (
+    (await composer.innerText().catch(() => "")).includes(prompt)
+    || (await composer.textContent().catch(() => "") || "").includes(prompt)
+  );
+  const selection = await selectSend(page, composer, composerMatches);
+  const sendVisible = !!selection.locator && await selection.locator.isVisible().catch(() => false);
+  const sendEnabled = sendVisible && !!selection.locator && await selection.locator.isEnabled().catch(() => false);
+  const current = safeUrl(page);
+  const state: Readiness = {
+    stage, elapsedMs: Math.max(0, Date.now() - started), url: current.url, conversationId: current.id,
+    sameTarget: sameTarget(page, expectedId, initialId),
+    generationActive: await isChatGptGenerationActive(page),
+    composerMatches, composerVisible, composerEditable, promptPresent,
+    sendSelector: selection.selector, sendMatches: selection.count, sendVisibleMatches: selection.visibleCount,
+    sendVisible, sendEnabled, sendActionable: false,
+  };
+  return { state, composer, send: selection.locator };
+}
+
+export class ChatGptSendError extends Error {
+  constructor(
+    readonly code: "PRE_SEND_NOT_READY" | "DISPATCH_AMBIGUOUS",
+    readonly diagnostic: Readiness,
+  ) {
+    // Only fixed-schema booleans/counts/stages and a stripped URL; never prompt, DOM, cookies or trace.
+    super(`${code} ${JSON.stringify(diagnostic)}`);
+    this.name = "ChatGptSendError";
+  }
+}
+
+function diagnostic(code: ChatGptSendError["code"], state: Readiness): ChatGptSendError {
+  return new ChatGptSendError(code, state);
+}
+
+export async function postClickAmbiguity(page: Page, started: number, expectedId: string | null): Promise<ChatGptSendError> {
+  const current = safeUrl(page);
+  return diagnostic("DISPATCH_AMBIGUOUS", (await inspect(page, "postclick", started, current.id, expectedId)).state);
+}
+
+export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?: string): Promise<number> {
+  const started = Date.now();
+  const initialId = safeUrl(page).id;
+  const targetId = expectedId ?? null;
+  let latest = await inspect(page, "precompose", started, initialId, targetId);
+  // Poll a bounded predicate, never use a blind fixed sleep to guess generation readiness.
+  while (!(latest.state.sameTarget && !latest.state.generationActive
+    && latest.state.composerMatches === 1 && latest.state.composerVisible && latest.state.composerEditable)) {
+    if (Date.now() - started >= 15_000) throw diagnostic("PRE_SEND_NOT_READY", latest.state);
+    await page.waitForTimeout(200);
+    latest = await inspect(page, "precompose", started, initialId, targetId);
+  }
+  const composer = latest.composer!;
+  // An existing unsent user draft is not ours to overwrite or append to.
+  const existing = await composer.innerText().catch(() => "");
+  if (existing.trim()) throw diagnostic("PRE_SEND_NOT_READY", latest.state);
+  try {
+    await composer.click({ timeout: 3000 });
+    await page.keyboard.insertText(prompt);
+  } catch {
+    throw diagnostic("PRE_SEND_NOT_READY", (await inspect(page, "precompose", started, initialId, targetId)).state);
+  }
+
+  let state = await inspect(page, "presend", started, initialId, targetId, prompt);
+  const deadline = Date.now() + 15_000;
+  while (true) {
+    if (state.state.sameTarget && !state.state.generationActive
+      && state.state.composerMatches === 1 && state.state.composerVisible && state.state.composerEditable
+      && state.state.promptPresent && state.state.sendVisibleMatches === 1 && state.state.sendVisible && state.state.sendEnabled
+      && state.send) {
+      // trial performs Playwright's actionability checks (including hit-target/overlays) without dispatch.
+      try {
+        await state.send.click({ trial: true, timeout: 800 });
+        state.state.sendActionable = true;
+        break;
+      } catch {
+        // A temporarily intercepted/animated target can settle before our bounded deadline.
+      }
+    }
+    if (Date.now() >= deadline) throw diagnostic("PRE_SEND_NOT_READY", state.state);
+    await page.waitForTimeout(200);
+    state = await inspect(page, "presend", started, initialId, targetId, prompt);
+  }
+
+  // Trial actionability can become stale during navigation or another generation.
+  const confirmed = await inspect(page, "presend", started, initialId, targetId, prompt);
+  if (!(confirmed.state.sameTarget && !confirmed.state.generationActive
+    && confirmed.state.composerMatches === 1 && confirmed.state.composerVisible && confirmed.state.composerEditable
+    && confirmed.state.promptPresent && confirmed.state.sendVisibleMatches === 1
+    && confirmed.state.sendVisible && confirmed.state.sendEnabled && confirmed.send)) {
+    throw diagnostic("PRE_SEND_NOT_READY", confirmed.state);
+  }
+  state = confirmed;
+  state.state.sendActionable = true;
+  // From this point even a timeout is ambiguous: never retry the actual dispatch.
+  try {
+    await state.send!.click({ timeout: 8000 });
+  } catch {
+    const snapshot = (await inspect(page, "click", started, initialId, targetId)).state;
+    snapshot.sendActionable = state.state.sendActionable;
+    throw diagnostic("DISPATCH_AMBIGUOUS", snapshot);
+  }
+  return started;
+}
