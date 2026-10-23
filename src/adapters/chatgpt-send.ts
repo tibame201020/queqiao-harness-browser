@@ -27,6 +27,7 @@ type Readiness = {
   composerEditable: boolean;
   promptPresent: boolean | null;
   promptIntegrity: "complete" | "empty" | "truncated" | "mismatch" | "unverifiable" | null;
+  precomposeReason: "draft_present" | "editor_read_failed" | "composer_click_failed" | null;
   sendSelector: SendSelection["selector"];
   sendMatches: number;
   sendVisibleMatches: number;
@@ -139,7 +140,7 @@ async function inspect(page: Page, stage: Stage, started: number, initialId: str
     stage, elapsedMs: Math.max(0, Date.now() - started), url: current.url, conversationId: current.id,
     sameTarget: sameTarget(page, expectedId, initialId),
     generationActive: await isChatGptGenerationActive(page),
-    composerMatches, composerVisible, composerEditable, promptPresent, promptIntegrity,
+    composerMatches, composerVisible, composerEditable, promptPresent, promptIntegrity, precomposeReason: null,
     sendSelector: selection.selector, sendMatches: selection.count, sendVisibleMatches: selection.visibleCount,
     sendVisible, sendEnabled, sendActionable: false,
   };
@@ -178,12 +179,48 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
     await page.waitForTimeout(200);
     latest = await inspect(page, "precompose", started, initialId, targetId);
   }
+  // A just-sent editor may clear asynchronously. Wait for a naturally empty editor;
+  // never erase, overwrite, or submit a retained independent user draft.
+  const draftState = async (editor: Locator): Promise<Readiness["precomposeReason"]> => {
+    try {
+      const [rendered, raw] = await Promise.all([editor.innerText(), editor.textContent()]);
+      return typeof rendered === "string" && typeof raw === "string"
+        ? (rendered.trim() || raw.trim() ? "draft_present" : null) : "editor_read_failed";
+    } catch { return "editor_read_failed"; }
+  };
+  while (true) {
+    const reason = await draftState(latest.composer!);
+    if (reason === "editor_read_failed" || (reason === "draft_present" && Date.now() - started >= 15_000)) {
+      latest.state.precomposeReason = reason;
+      throw diagnostic("PRE_SEND_NOT_READY", latest.state);
+    }
+    if (reason === null) break;
+    await page.waitForTimeout(200);
+    latest = await inspect(page, "precompose", started, initialId, targetId);
+    while (!(latest.state.sameTarget && !latest.state.generationActive
+      && latest.state.composerMatches === 1 && latest.state.composerVisible && latest.state.composerEditable)) {
+      if (Date.now() - started >= 15_000) throw diagnostic("PRE_SEND_NOT_READY", latest.state);
+      await page.waitForTimeout(200);
+      latest = await inspect(page, "precompose", started, initialId, targetId);
+    }
+  }
   const composer = latest.composer!;
-  // An existing unsent user draft is not ours to overwrite or append to.
-  const existing = await composer.innerText().catch(() => "");
-  if (existing.trim()) throw diagnostic("PRE_SEND_NOT_READY", latest.state);
   try {
     await composer.click({ timeout: 3000 });
+  } catch {
+    const snapshot = (await inspect(page, "precompose", started, initialId, targetId)).state;
+    snapshot.precomposeReason = "composer_click_failed";
+    throw diagnostic("PRE_SEND_NOT_READY", snapshot);
+  }
+  // Revalidate after focus: a newly appearing draft or navigation cannot receive our text.
+  const focused = await inspect(page, "precompose", started, initialId, targetId);
+  const focusedReason = await draftState(composer);
+  if (focusedReason || !focused.state.sameTarget || focused.state.generationActive
+    || focused.state.composerMatches !== 1 || !focused.state.composerVisible || !focused.state.composerEditable) {
+    focused.state.precomposeReason = focusedReason;
+    throw diagnostic("PRE_SEND_NOT_READY", focused.state);
+  }
+  try {
     await page.keyboard.insertText(prompt);
   } catch {
     throw diagnostic("PRE_SEND_NOT_READY", (await inspect(page, "precompose", started, initialId, targetId)).state);
