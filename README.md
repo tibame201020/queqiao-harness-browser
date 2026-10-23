@@ -144,14 +144,23 @@ contenteditable paragraph blocks rather than using raw `innerText.includes` or
 `textContent.includes`), and a single visible/enabled Send control is
 found (the editor's form first, unique legacy `send-button` fallback).
 A Playwright trial click verifies actionability before the **one** real click.
-There is no fixed sleep and no automatic resend. The generic Runner receives
+After the single real click, the ChatGPT Site Adapter retains the **same Browser Session**.
+A resumed conversation does not count an unchanged `/c/<id>` URL as successful submission:
+it waits at least 3 seconds and at most 5 seconds for a newly added User Turn with
+semantically equivalent full text, the correct conversation ID, and an empty composer.
+Observations must remain stable; if a click was possible but these predicates fail,
+the result is `ambiguous/SEND_OUTCOME_UNKNOWN`, never a safe-to-resend error.
+The prior 15-second precompose draft-clearing wait was removed: existing unsent drafts
+remain protected and are never erased or overwritten.
+There is no unconditional fixed sleep and no automatic resend. The generic Runner receives
 `unavailable/PRE_SEND_NOT_READY` (no real Send click attempted) or
 `ambiguous/SEND_OUTCOME_UNKNOWN|CONVERSATION_ID_NOT_CONFIRMED` (a real click was
 attempted or its post-click identity was not confirmed); ambiguous receipts
 persist the existing replay guard. A nonsecret structured diagnostic includes
 stage/elapsed time, stripped origin/path and conversation identity,
 generation/editor state, raw and visible Send selector counts and
-enabled/actionable flags, plus fixed `promptIntegrity` status
+enabled/actionable flags, fixed post-click `submissionConfirmed` and
+`composerSettled` booleans, plus fixed `promptIntegrity` status
 (`complete`, `empty`, `truncated`, `mismatch`, `unverifiable`); never prompt,
 DOM text, cookies or credentials. Actual truncation and unsupported mixed DOM
 layouts fail closed before a real click; harmless paragraph line-break

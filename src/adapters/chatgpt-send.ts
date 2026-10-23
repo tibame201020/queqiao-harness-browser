@@ -6,6 +6,10 @@ const FORM_SEND = '[data-testid="send-button"], button[type="submit"]';
 const FORM_SEND_VISIBLE = '[data-testid="send-button"]:visible, button[type="submit"]:visible';
 const LEGACY_SEND = '[data-testid="send-button"]';
 const LEGACY_SEND_VISIBLE = '[data-testid="send-button"]:visible';
+const USER_TURNS = '[data-message-author-role="user"]';
+const POST_CLICK_MAX_MS = 5_000;
+const POST_CLICK_MIN_MS = 3_000;
+const POST_CLICK_STABLE_MS = 600;
 const GENERATION = [
   '[data-testid="stop-button"]',
   'button[aria-label="Stop generating"]',
@@ -34,6 +38,8 @@ type Readiness = {
   sendVisible: boolean;
   sendEnabled: boolean;
   sendActionable: boolean;
+  submissionConfirmed: boolean | null;
+  composerSettled: boolean | null;
 };
 
 function safeUrl(page: Page): { url: string; id: string | null } {
@@ -143,6 +149,7 @@ async function inspect(page: Page, stage: Stage, started: number, initialId: str
     composerMatches, composerVisible, composerEditable, promptPresent, promptIntegrity, precomposeReason: null,
     sendSelector: selection.selector, sendMatches: selection.count, sendVisibleMatches: selection.visibleCount,
     sendVisible, sendEnabled, sendActionable: false,
+    submissionConfirmed: null, composerSettled: null,
   };
   return { state, composer, send: selection.locator };
 }
@@ -167,6 +174,60 @@ export async function postClickAmbiguity(page: Page, started: number, expectedId
   return diagnostic("DISPATCH_AMBIGUOUS", (await inspect(page, "postclick", started, current.id, expectedId)).state);
 }
 
+function sameSubmittedText(actual: string, expected: string): boolean {
+  // Rendering can normalize paragraph whitespace. The pre-send check already verifies exact editor integrity.
+  const semantic = (value: string) => value.replace(/[\s\u00a0]+/gu, " ").trim();
+  return semantic(actual) === semantic(expected);
+}
+
+/** Keep the same Browser Session open until this particular submitted User Turn is visible and its editor settles. */
+async function awaitPostClickSettlement(page: Page, prompt: string, started: number, initialId: string | null,
+  expectedId: string | null, beforeUserTurns: number): Promise<void> {
+  const clickedAt = Date.now();
+  let stableSince: number | null = null;
+  while (true) {
+    const snapshot = await inspect(page, "postclick", started, initialId, expectedId);
+    const currentId = safeUrl(page).id;
+    const targetValid = expectedId
+      ? currentId === expectedId && initialId === expectedId
+      : currentId !== null && (initialId === null || currentId === initialId);
+    const turns = page.locator(USER_TURNS);
+    const turnCount = await turns.count().catch(() => -1);
+    let newTurnMatches = false;
+    if (targetValid && turnCount > beforeUserTurns) {
+      const turn = turns.nth(turnCount - 1);
+      // Prefer the actual bubble content, excluding copy/edit buttons owned by the outer turn.
+      const contents = turn.locator(".whitespace-pre-wrap");
+      const count = await contents.count().catch(() => -1);
+      const message = count === 1 ? contents.first() : count === 0 ? turn : null;
+      const observed = message ? await message.innerText({ timeout: 500 }).catch(() => null) : null;
+      newTurnMatches = typeof observed === "string" && sameSubmittedText(observed, prompt);
+    }
+    const editor = snapshot.composer;
+    let editorEmpty = false;
+    if (editor && snapshot.state.composerMatches === 1 && snapshot.state.composerVisible) {
+      const [rendered, raw] = await Promise.all([
+        editor.innerText({ timeout: 500 }).catch(() => null),
+        editor.textContent({ timeout: 500 }).catch(() => null),
+      ]);
+      editorEmpty = typeof rendered === "string" && typeof raw === "string"
+        && !rendered.trim() && !raw.trim();
+    }
+    snapshot.state.submissionConfirmed = newTurnMatches;
+    snapshot.state.composerSettled = editorEmpty;
+    const now = Date.now();
+    if (targetValid && newTurnMatches && editorEmpty) {
+      stableSince ??= now;
+      // A brief minimum dwell lets the site's optimistic UI settle before managed Chrome closes.
+      if (now - clickedAt >= POST_CLICK_MIN_MS && now - stableSince >= POST_CLICK_STABLE_MS) return;
+    } else {
+      stableSince = null;
+    }
+    if (now - clickedAt >= POST_CLICK_MAX_MS) throw diagnostic("DISPATCH_AMBIGUOUS", snapshot.state);
+    await page.waitForTimeout(200);
+  }
+}
+
 export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?: string): Promise<number> {
   const started = Date.now();
   const initialId = safeUrl(page).id;
@@ -179,8 +240,7 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
     await page.waitForTimeout(200);
     latest = await inspect(page, "precompose", started, initialId, targetId);
   }
-  // A just-sent editor may clear asynchronously. Wait for a naturally empty editor;
-  // never erase, overwrite, or submit a retained independent user draft.
+  // A nonempty draft is not ours to overwrite. The previous 15s precompose wait did not resolve #20.
   const draftState = async (editor: Locator): Promise<Readiness["precomposeReason"]> => {
     try {
       const [rendered, raw] = await Promise.all([editor.innerText(), editor.textContent()]);
@@ -188,21 +248,10 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
         ? (rendered.trim() || raw.trim() ? "draft_present" : null) : "editor_read_failed";
     } catch { return "editor_read_failed"; }
   };
-  while (true) {
-    const reason = await draftState(latest.composer!);
-    if (reason === "editor_read_failed" || (reason === "draft_present" && Date.now() - started >= 15_000)) {
-      latest.state.precomposeReason = reason;
-      throw diagnostic("PRE_SEND_NOT_READY", latest.state);
-    }
-    if (reason === null) break;
-    await page.waitForTimeout(200);
-    latest = await inspect(page, "precompose", started, initialId, targetId);
-    while (!(latest.state.sameTarget && !latest.state.generationActive
-      && latest.state.composerMatches === 1 && latest.state.composerVisible && latest.state.composerEditable)) {
-      if (Date.now() - started >= 15_000) throw diagnostic("PRE_SEND_NOT_READY", latest.state);
-      await page.waitForTimeout(200);
-      latest = await inspect(page, "precompose", started, initialId, targetId);
-    }
+  const reason = await draftState(latest.composer!);
+  if (reason) {
+    latest.state.precomposeReason = reason;
+    throw diagnostic("PRE_SEND_NOT_READY", latest.state);
   }
   const composer = latest.composer!;
   try {
@@ -257,6 +306,8 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
   }
   state = confirmed;
   state.state.sendActionable = true;
+  const beforeUserTurns = await page.locator(USER_TURNS).count().catch(() => -1);
+  if (beforeUserTurns < 0) throw diagnostic("PRE_SEND_NOT_READY", state.state);
   // From this point even a timeout is ambiguous: never retry the actual dispatch.
   try {
     await state.send!.click({ timeout: 8000 });
@@ -264,6 +315,13 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
     const snapshot = (await inspect(page, "click", started, initialId, targetId)).state;
     snapshot.sendActionable = state.state.sendActionable;
     throw diagnostic("DISPATCH_AMBIGUOUS", snapshot);
+  }
+  try {
+    await awaitPostClickSettlement(page, prompt, started, initialId, targetId, beforeUserTurns);
+  } catch (error) {
+    if (error instanceof ChatGptSendError) throw error;
+    // A post-click DOM/page failure is never safe to reclassify as pre-send or auto-resend.
+    throw diagnostic("DISPATCH_AMBIGUOUS", (await inspect(page, "postclick", started, initialId, targetId)).state);
   }
   return started;
 }

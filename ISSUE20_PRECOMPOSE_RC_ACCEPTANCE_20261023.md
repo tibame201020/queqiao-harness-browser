@@ -1,4 +1,6 @@
-# Issue #20 — generic ChatGPT precompose draft-settling candidate (2026-10-23)
+# Issue #20 — historical precompose candidate (superseded, 2026-10-23)
+
+**Superseded:** subsequent WEB-32 Live evidence disproved waiting for a pre-send draft to clear as a sufficient remedy. See `ISSUE20_POSTCLICK_SETTLEMENT_ACCEPTANCE_20261023.md` for the current candidate; the facts below record only the old candidate and must not be read as its acceptance.
 
 Status: **source regression PASS; authenticated Live multi-turn E2E NOT YET ACCEPTED**. This is an isolated candidate based on #18 merged main `b5bcca1e69ecbf90dbb0d6057dff1f528508fc48`, not a production release or a claim that WEB-31 was recovered.
 

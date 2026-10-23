@@ -5,10 +5,19 @@ import { nextAmbiguousTrigger } from "../core/trigger-guard.js";
 const ID = "11111111-1111-4111-8111-111111111111";
 
 function fixture(options: { generating?: boolean; enabled?: boolean; intercept?: boolean; settleAfter?: number; paragraphLayout?: boolean; truncateAt?: number; extraAfterInsert?: boolean; unsupportedLayout?: boolean; existingDraft?: string; clearDraftAfterPoll?: number; clickFailure?: boolean; focusDraft?: string; editorReadFailure?: boolean } = {}) {
+  let logicalNow = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   let generating = options.generating ?? false;
   let enabled = options.enabled ?? true;
   let url = "https://chatgpt.com/";
   let editorText = options.existingDraft ?? "";
+  let userTurns = 0;
+  let latestUserText = "";
+  const userMessage = {
+    innerText: vi.fn(async () => latestUserText),
+    locator: vi.fn(() => ({ count: vi.fn(async () => 0) })),
+  };
+  const userTurnsLocator = { count: vi.fn(async () => userTurns), nth: vi.fn(() => userMessage) };
   let polls = 0;
   let attemptedSends = 0;
   let typedWhileGenerating = false;
@@ -38,6 +47,9 @@ function fixture(options: { generating?: boolean; enabled?: boolean; intercept?:
       }
       attemptedSends++;
       if (options.intercept) throw new Error("intercepted after dispatch possibility");
+      latestUserText = editorText;
+      userTurns++;
+      editorText = "";
       url = `https://chatgpt.com/c/${ID}`;
     }),
   };
@@ -55,6 +67,7 @@ function fixture(options: { generating?: boolean; enabled?: boolean; intercept?:
     goto: vi.fn(async () => { url = "https://chatgpt.com/"; }),
     url: vi.fn(() => url),
     locator: vi.fn((selector: string) => {
+      if (selector === '[data-message-author-role="user"]') return userTurnsLocator;
       if (selector.includes("stop-button") || selector.includes("Stop generating") || selector.includes("停止產生") || selector.includes("停止生成")) return stop;
       if (selector.includes("send-button") || selector.includes('button[type="submit"]')) return send;
       if (selector.includes("#prompt-textarea") || selector.includes('[role="textbox"]')) return composer;
@@ -188,17 +201,14 @@ describe("ChatGPT generic pre-send readiness (#16)", () => {
     expect(f.attemptedSends).toBe(0);
   });
 
-  it("waits read-only for a transient just-sent draft to clear before inserting exactly once (#20)", async () => {
+  it("never guesses ownership of a draft before Send (#20)", async () => {
     const f = fixture({ existingDraft: "SYNTHETIC_TRANSIENT_PREVIOUS_SEND", clearDraftAfterPoll: 2 });
-    const prompt = "Synthetic next turn\\n\\n- ????\\n**Markdown**";
-    const result = await chatgptAdapter.execute("trigger", { prompt }, context(f.page));
-    expect(result).toMatchObject({ status: "triggered", conversationId: ID });
-    expect(f.polls).toBeGreaterThanOrEqual(2);
-    expect(f.page.keyboard.insertText).toHaveBeenCalledTimes(1);
-    expect(f.page.keyboard.insertText).toHaveBeenCalledWith(prompt);
-    expect(f.attemptedSends).toBe(1);
+    const result = await chatgptAdapter.execute("trigger", { prompt: "Synthetic next turn" }, context(f.page));
+    expect(result).toMatchObject({ status: "unavailable", reason: "PRE_SEND_NOT_READY", retryable: true,
+      diagnostic: { stage: "precompose", precomposeReason: "draft_present" } });
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.attemptedSends).toBe(0);
   });
-
   it("protects a persistent independent draft, with bounded nonsecret classification (#20)", async () => {
     const draft = "CONFIDENTIAL_EXISTING_USER_DRAFT";
     const f = fixture({ existingDraft: draft });
