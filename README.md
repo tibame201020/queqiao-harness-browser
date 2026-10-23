@@ -136,9 +136,22 @@ All ChatGPT behaviors are opt-in and independent:
 
 ChatGPT's composer can be rendered as either the legacy `#prompt-textarea`
 or a visible `[role="textbox"][contenteditable="true"]` editor.
-The trigger also supports the current composer form's submit button when the
-legacy `send-button` test ID is absent. Use an authenticated browser profile
-for real UI smoke tests; do not commit profiles, cookies or conversation IDs.
+Trigger now polls bounded UI predicates before typing/sending: the original
+conversation target is unchanged, prior generation is inactive, exactly one
+visible/editable composer is selected, no existing unsent draft is overwritten,
+the inserted prompt is present, and a single visible/enabled Send control is
+found (the editor's form first, unique legacy `send-button` fallback).
+A Playwright trial click verifies actionability before the **one** real click.
+There is no fixed sleep and no automatic resend. The generic Runner receives
+`unavailable/PRE_SEND_NOT_READY` (no real Send click attempted) or
+`ambiguous/SEND_OUTCOME_UNKNOWN|CONVERSATION_ID_NOT_CONFIRMED` (a real click was
+attempted or its post-click identity was not confirmed); ambiguous receipts
+persist the existing replay guard. A nonsecret structured diagnostic includes
+stage/elapsed time, stripped origin/path and conversation identity,
+generation/editor state, raw and visible Send selector counts and
+enabled/actionable flags; never prompt, DOM text, cookies or credentials.
+Any ambiguous dispatch requires external reconciliation before another trigger. Use an authenticated browser profile for real UI smoke tests;
+do not commit profiles, cookies, conversation IDs or live receipts.
 ChatGPT actions:
 
 - `list_projects`
