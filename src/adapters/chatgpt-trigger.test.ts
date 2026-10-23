@@ -22,6 +22,7 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean } 
     count: vi.fn(async () => 1), first() { return this; },
     isVisible: vi.fn(async () => true), isEditable: vi.fn(async () => true),
     innerText: vi.fn(async () => editorText), textContent: vi.fn(async () => editorText),
+    evaluate: vi.fn(async () => editorText),
     locator: vi.fn(() => form),
     click: vi.fn(async () => { calls.push("composer"); }),
   };

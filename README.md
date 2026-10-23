@@ -139,7 +139,9 @@ or a visible `[role="textbox"][contenteditable="true"]` editor.
 Trigger now polls bounded UI predicates before typing/sending: the original
 conversation target is unchanged, prior generation is inactive, exactly one
 visible/editable composer is selected, no existing unsent draft is overwritten,
-the inserted prompt is present, and a single visible/enabled Send control is
+the inserted prompt is semantically complete (reconstructing line breaks from
+contenteditable paragraph blocks rather than using raw `innerText.includes` or
+`textContent.includes`), and a single visible/enabled Send control is
 found (the editor's form first, unique legacy `send-button` fallback).
 A Playwright trial click verifies actionability before the **one** real click.
 There is no fixed sleep and no automatic resend. The generic Runner receives
@@ -149,7 +151,11 @@ attempted or its post-click identity was not confirmed); ambiguous receipts
 persist the existing replay guard. A nonsecret structured diagnostic includes
 stage/elapsed time, stripped origin/path and conversation identity,
 generation/editor state, raw and visible Send selector counts and
-enabled/actionable flags; never prompt, DOM text, cookies or credentials.
+enabled/actionable flags, plus fixed `promptIntegrity` status
+(`complete`, `empty`, `truncated`, `mismatch`, `unverifiable`); never prompt,
+DOM text, cookies or credentials. Actual truncation and unsupported mixed DOM
+layouts fail closed before a real click; harmless paragraph line-break
+normalization is accepted only when the entire reconstructed input matches.
 Any ambiguous dispatch requires external reconciliation before another trigger. Use an authenticated browser profile for real UI smoke tests;
 do not commit profiles, cookies, conversation IDs or live receipts.
 ChatGPT actions:

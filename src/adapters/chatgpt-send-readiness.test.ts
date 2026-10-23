@@ -4,7 +4,7 @@ import { nextAmbiguousTrigger } from "../core/trigger-guard.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(options: { generating?: boolean; enabled?: boolean; intercept?: boolean; settleAfter?: number } = {}) {
+function fixture(options: { generating?: boolean; enabled?: boolean; intercept?: boolean; settleAfter?: number; paragraphLayout?: boolean; truncateAt?: number; extraAfterInsert?: boolean; unsupportedLayout?: boolean } = {}) {
   let generating = options.generating ?? false;
   let enabled = options.enabled ?? true;
   let url = "https://chatgpt.com/";
@@ -19,8 +19,9 @@ function fixture(options: { generating?: boolean; enabled?: boolean; intercept?:
     click: vi.fn(async () => undefined),
     isVisible: vi.fn(async () => true),
     isEditable: vi.fn(async () => true),
-    innerText: vi.fn(async () => editorText),
-    textContent: vi.fn(async () => editorText),
+    innerText: vi.fn(async () => options.paragraphLayout ? editorText.split("\n").join("\n\n") : editorText),
+    textContent: vi.fn(async () => options.paragraphLayout ? editorText.split("\n").join("") : editorText),
+    evaluate: vi.fn(async () => options.unsupportedLayout ? null : editorText),
     locator: vi.fn(() => form),
   };
   const send = {
@@ -61,7 +62,8 @@ function fixture(options: { generating?: boolean; enabled?: boolean; intercept?:
     }),
     keyboard: { insertText: vi.fn(async (text: string) => {
       if (generating) typedWhileGenerating = true;
-      editorText += text;
+      editorText += options.truncateAt === undefined ? text : text.slice(0, options.truncateAt);
+      if (options.extraAfterInsert) editorText += " UNEXPECTED_EXTRA_TEXT";
     }) },
     waitForTimeout: vi.fn(async () => {
       polls++;
@@ -132,6 +134,57 @@ describe("ChatGPT generic pre-send readiness (#16)", () => {
       diagnostic: { stage: "presend", sendActionable: false } });
     expect(f.attemptedSends).toBe(0);
     expect(f.send.click.mock.calls.every((args) => args[0]?.trial === true)).toBe(true);
+  });
+
+  it.each([
+    "Synthetic first line\nsecond line",
+    "Synthetic role\n\n## Heartbeat\n- item one\n- 中文測試 ✅\n\n**Final:** exact marker",
+    "@Queqiao\n\n1. Check state\n2. Read only\n\nEnd.",
+  ])("accepts semantically exact paragraph-rendered multiline input without a blind resend", async (prompt) => {
+    const f = fixture({ paragraphLayout: true });
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => { now += 1000; return now; });
+    const result = await chatgptAdapter.execute("trigger", { prompt }, context(f.page));
+    expect(f.composer.innerText).toHaveBeenCalled();
+    expect(f.composer.evaluate).toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "triggered", conversationId: ID });
+    expect(f.attemptedSends).toBe(1);
+    expect(f.send.click.mock.calls.filter((args) => !args[0]?.trial)).toHaveLength(1);
+  });
+
+  it("fails closed on a genuinely truncated multiline insertion and reports no prompt content", async () => {
+    const f = fixture({ paragraphLayout: true, truncateAt: 24 });
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => { now += 3000; return now; });
+    const prompt = "PRIVATE_CONTENT_DO_NOT_LOG_18\n\n## Heartbeat\n- 中文 ✅\n\nFinal answer";
+    const result = await chatgptAdapter.execute("trigger", { prompt }, context(f.page));
+    expect(result).toMatchObject({ status: "unavailable", reason: "PRE_SEND_NOT_READY", retryable: true,
+      diagnostic: { stage: "presend", promptPresent: false, promptIntegrity: "truncated" } });
+    expect(JSON.stringify(result)).not.toContain(prompt);
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_CONTENT_DO_NOT_LOG_18");
+    expect(f.attemptedSends).toBe(0);
+  });
+
+  it("rejects extra editor content even if both original DOM text getters include the requested prompt", async () => {
+    const f = fixture({ paragraphLayout: true, extraAfterInsert: true });
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => { now += 3000; return now; });
+    const prompt = "PRIVATE_EXTRA_CONTENT_CHECK_18\n\n中文";
+    const result = await chatgptAdapter.execute("trigger", { prompt }, context(f.page));
+    expect(result).toMatchObject({ status: "unavailable", reason: "PRE_SEND_NOT_READY", retryable: true,
+      diagnostic: { promptPresent: false, promptIntegrity: "mismatch" } });
+    expect(JSON.stringify(result)).not.toContain(prompt);
+    expect(f.attemptedSends).toBe(0);
+  });
+
+  it("fails closed when the editor DOM has an unsupported mixed layout", async () => {
+    const f = fixture({ unsupportedLayout: true });
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => { now += 3000; return now; });
+    const result = await chatgptAdapter.execute("trigger", { prompt: "safe mixed layout" }, context(f.page));
+    expect(result).toMatchObject({ status: "unavailable", reason: "PRE_SEND_NOT_READY", retryable: true,
+      diagnostic: { promptPresent: false, promptIntegrity: "unverifiable" } });
+    expect(f.attemptedSends).toBe(0);
   });
 
   it("preserves an ordinary prompt containing a connected-app mention as editor input", async () => {

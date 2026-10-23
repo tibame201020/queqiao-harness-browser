@@ -26,6 +26,7 @@ type Readiness = {
   composerVisible: boolean;
   composerEditable: boolean;
   promptPresent: boolean | null;
+  promptIntegrity: "complete" | "empty" | "truncated" | "mismatch" | "unverifiable" | null;
   sendSelector: SendSelection["selector"];
   sendMatches: number;
   sendVisibleMatches: number;
@@ -84,6 +85,43 @@ function sameTarget(page: Page, expectedId: string | null, initialId: string | n
     && current.id === initialId;
 }
 
+type PromptIntegrity = Exclude<Readiness["promptIntegrity"], null>;
+
+/** Rebuild semantic editor line breaks from contenteditable blocks, not innerText spacing or textContent concatenation. */
+async function inspectPromptIntegrity(composer: Locator, prompt: string): Promise<PromptIntegrity> {
+  // The reconstructed text exists only transiently in memory. It is never returned in receipts or diagnostics.
+  const actual = await composer.evaluate((root): string | null => {
+    const content = [...root.childNodes];
+    const isBlock = (n: Node) => n.nodeType === Node.ELEMENT_NODE
+      && ["P", "DIV"].includes((n as Element).tagName);
+    const textInside = (n: Node): string => {
+      if (n.nodeType === Node.TEXT_NODE) return n.textContent ?? "";
+      if (n.nodeType !== Node.ELEMENT_NODE) return "";
+      const el = n as Element;
+      if (el.tagName === "BR") return "\n";
+      return [...el.childNodes].map(textInside).join("");
+    };
+    if (content.length && content.every(isBlock)) {
+      return content.map((block) => {
+        // An empty ProseMirror paragraph contains a placeholder BR, not one typed newline.
+        if (block.childNodes.length === 1 && (block.firstChild as Element).tagName === "BR") return "";
+        return [...block.childNodes].map(textInside).join("");
+      }).join("\n");
+    }
+    // Mixed blocks and inline nodes cannot be reconstructed unambiguously: fail closed.
+    if (content.some(isBlock)) return null;
+    return content.map(textInside).join("");
+  }).catch(() => null);
+  if (actual === null) return "unverifiable";
+  const canonical = (value: string) => value.replace(/\r\n?/g, "\n");
+  const observed = canonical(actual);
+  const intended = canonical(prompt);
+  if (observed === intended) return "complete";
+  if (!observed) return "empty";
+  if (intended.startsWith(observed)) return "truncated";
+  return "mismatch";
+}
+
 async function inspect(page: Page, stage: Stage, started: number, initialId: string | null,
   expectedId: string | null, prompt?: string): Promise<{ state: Readiness; composer: Locator | null; send: Locator | null }> {
   const composers = page.locator(COMPOSER);
@@ -91,10 +129,8 @@ async function inspect(page: Page, stage: Stage, started: number, initialId: str
   const composer = composerMatches === 1 ? composers.first() : null;
   const composerVisible = !!composer && await composer.isVisible().catch(() => false);
   const composerEditable = composerVisible && !!composer && await composer.isEditable().catch(() => false);
-  const promptPresent = prompt === undefined ? null : !!composer && (
-    (await composer.innerText().catch(() => "")).includes(prompt)
-    || (await composer.textContent().catch(() => "") || "").includes(prompt)
-  );
+  const promptIntegrity = prompt === undefined ? null : composer ? await inspectPromptIntegrity(composer, prompt) : "unverifiable";
+  const promptPresent = promptIntegrity === null ? null : promptIntegrity === "complete";
   const selection = await selectSend(page, composer, composerMatches);
   const sendVisible = !!selection.locator && await selection.locator.isVisible().catch(() => false);
   const sendEnabled = sendVisible && !!selection.locator && await selection.locator.isEnabled().catch(() => false);
@@ -103,7 +139,7 @@ async function inspect(page: Page, stage: Stage, started: number, initialId: str
     stage, elapsedMs: Math.max(0, Date.now() - started), url: current.url, conversationId: current.id,
     sameTarget: sameTarget(page, expectedId, initialId),
     generationActive: await isChatGptGenerationActive(page),
-    composerMatches, composerVisible, composerEditable, promptPresent,
+    composerMatches, composerVisible, composerEditable, promptPresent, promptIntegrity,
     sendSelector: selection.selector, sendMatches: selection.count, sendVisibleMatches: selection.visibleCount,
     sendVisible, sendEnabled, sendActionable: false,
   };
