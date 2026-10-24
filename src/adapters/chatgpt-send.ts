@@ -6,7 +6,8 @@ const FORM_SEND = '[data-testid="send-button"], button[type="submit"]';
 const FORM_SEND_VISIBLE = '[data-testid="send-button"]:visible, button[type="submit"]:visible';
 const LEGACY_SEND = '[data-testid="send-button"]';
 const LEGACY_SEND_VISIBLE = '[data-testid="send-button"]:visible';
-const USER_TURNS = '[data-message-author-role="user"]';
+const USER_BUBBLES = '[data-user-message-bubble="true"]';
+const LEGACY_USER_TURNS = '[data-message-author-role="user"]';
 const POST_CLICK_MAX_MS = 5_000;
 const POST_CLICK_MIN_MS = 3_000;
 const POST_CLICK_STABLE_MS = 600;
@@ -182,7 +183,7 @@ function sameSubmittedText(actual: string, expected: string): boolean {
 
 /** Keep the same Browser Session open until this particular submitted User Turn is visible and its editor settles. */
 async function awaitPostClickSettlement(page: Page, prompt: string, started: number, initialId: string | null,
-  expectedId: string | null, beforeUserTurns: number): Promise<void> {
+  expectedId: string | null, beforeUserTurns: { bubbles: number; legacy: number }): Promise<void> {
   const clickedAt = Date.now();
   let stableSince: number | null = null;
   while (true) {
@@ -191,10 +192,16 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     const targetValid = expectedId
       ? currentId === expectedId && initialId === expectedId
       : currentId !== null && (initialId === null || currentId === initialId);
-    const turns = page.locator(USER_TURNS);
-    const turnCount = await turns.count().catch(() => -1);
+    // Current ChatGPT renders a user bubble without the former author-role attribute.
+    // Select one family, never count nested old/new wrappers as two User Turns.
+    const bubbles = page.locator(USER_BUBBLES);
+    const bubbleCount = await bubbles.count().catch(() => -1);
+    const useBubbles = bubbleCount > 0;
+    const turns = useBubbles ? bubbles : page.locator(LEGACY_USER_TURNS);
+    const turnCount = useBubbles ? bubbleCount : await turns.count().catch(() => -1);
+    const priorCount = useBubbles ? beforeUserTurns.bubbles : beforeUserTurns.legacy;
     let newTurnMatches = false;
-    if (targetValid && turnCount > beforeUserTurns) {
+    if (targetValid && turnCount > priorCount && priorCount >= 0) {
       const turn = turns.nth(turnCount - 1);
       // Prefer the actual bubble content, excluding copy/edit buttons owned by the outer turn.
       const contents = turn.locator(".whitespace-pre-wrap");
@@ -306,8 +313,12 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
   }
   state = confirmed;
   state.state.sendActionable = true;
-  const beforeUserTurns = await page.locator(USER_TURNS).count().catch(() => -1);
-  if (beforeUserTurns < 0) throw diagnostic("PRE_SEND_NOT_READY", state.state);
+  const [beforeBubbles, beforeLegacy] = await Promise.all([
+    page.locator(USER_BUBBLES).count().catch(() => -1),
+    page.locator(LEGACY_USER_TURNS).count().catch(() => -1),
+  ]);
+  if (beforeBubbles < 0 || beforeLegacy < 0) throw diagnostic("PRE_SEND_NOT_READY", state.state);
+  const beforeUserTurns = { bubbles: beforeBubbles, legacy: beforeLegacy };
   // From this point even a timeout is ambiguous: never retry the actual dispatch.
   try {
     await state.send!.click({ timeout: 8000 });

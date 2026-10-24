@@ -68,6 +68,7 @@ function fixture(options: { generating?: boolean; enabled?: boolean; intercept?:
     url: vi.fn(() => url),
     locator: vi.fn((selector: string) => {
       if (selector === '[data-message-author-role="user"]') return userTurnsLocator;
+      if (selector === '[data-user-message-bubble="true"]') return { count: vi.fn(async () => 0), nth: vi.fn(() => userMessage) };
       if (selector.includes("stop-button") || selector.includes("Stop generating") || selector.includes("停止產生") || selector.includes("停止生成")) return stop;
       if (selector.includes("send-button") || selector.includes('button[type="submit"]')) return send;
       if (selector.includes("#prompt-textarea") || selector.includes('[role="textbox"]')) return composer;

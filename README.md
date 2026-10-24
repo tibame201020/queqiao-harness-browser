@@ -148,6 +148,9 @@ After the single real click, the ChatGPT Site Adapter retains the **same Browser
 A resumed conversation does not count an unchanged `/c/<id>` URL as successful submission:
 it waits at least 3 seconds and at most 5 seconds for a newly added User Turn with
 semantically equivalent full text, the correct conversation ID, and an empty composer.
+Current ChatGPT user bubbles use `[data-user-message-bubble="true"]`; the older
+`[data-message-author-role="user"]` remains a fallback. Count one DOM family at a time
+to avoid treating nested wrappers as multiple submitted turns.
 Observations must remain stable; if a click was possible but these predicates fail,
 the result is `ambiguous/SEND_OUTCOME_UNKNOWN`, never a safe-to-resend error.
 The prior 15-second precompose draft-clearing wait was removed: existing unsent drafts
