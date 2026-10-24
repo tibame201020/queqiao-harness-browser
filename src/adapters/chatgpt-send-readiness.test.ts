@@ -4,11 +4,20 @@ import { nextAmbiguousTrigger } from "../core/trigger-guard.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(options: { generating?: boolean; enabled?: boolean; intercept?: boolean; settleAfter?: number; paragraphLayout?: boolean; truncateAt?: number; extraAfterInsert?: boolean; unsupportedLayout?: boolean } = {}) {
+function fixture(options: { generating?: boolean; enabled?: boolean; intercept?: boolean; settleAfter?: number; paragraphLayout?: boolean; truncateAt?: number; extraAfterInsert?: boolean; unsupportedLayout?: boolean; existingDraft?: string; clearDraftAfterPoll?: number; clickFailure?: boolean; focusDraft?: string; editorReadFailure?: boolean } = {}) {
+  let logicalNow = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   let generating = options.generating ?? false;
   let enabled = options.enabled ?? true;
   let url = "https://chatgpt.com/";
-  let editorText = "";
+  let editorText = options.existingDraft ?? "";
+  let userTurns = 0;
+  let latestUserText = "";
+  const userMessage = {
+    innerText: vi.fn(async () => latestUserText),
+    locator: vi.fn(() => ({ count: vi.fn(async () => 0) })),
+  };
+  const userTurnsLocator = { count: vi.fn(async () => userTurns), nth: vi.fn(() => userMessage) };
   let polls = 0;
   let attemptedSends = 0;
   let typedWhileGenerating = false;
@@ -16,10 +25,10 @@ function fixture(options: { generating?: boolean; enabled?: boolean; intercept?:
     count: vi.fn(async () => 1),
     first() { return this; },
     waitFor: vi.fn(async () => undefined),
-    click: vi.fn(async () => undefined),
+    click: vi.fn(async () => { if (options.clickFailure) throw new Error("focus unavailable"); if (options.focusDraft) editorText = options.focusDraft; }),
     isVisible: vi.fn(async () => true),
     isEditable: vi.fn(async () => true),
-    innerText: vi.fn(async () => options.paragraphLayout ? editorText.split("\n").join("\n\n") : editorText),
+    innerText: vi.fn(async () => { if (options.editorReadFailure) throw new Error("editor read unavailable"); return options.paragraphLayout ? editorText.split("\n").join("\n\n") : editorText; }),
     textContent: vi.fn(async () => options.paragraphLayout ? editorText.split("\n").join("") : editorText),
     evaluate: vi.fn(async () => options.unsupportedLayout ? null : editorText),
     locator: vi.fn(() => form),
@@ -38,6 +47,9 @@ function fixture(options: { generating?: boolean; enabled?: boolean; intercept?:
       }
       attemptedSends++;
       if (options.intercept) throw new Error("intercepted after dispatch possibility");
+      latestUserText = editorText;
+      userTurns++;
+      editorText = "";
       url = `https://chatgpt.com/c/${ID}`;
     }),
   };
@@ -55,6 +67,8 @@ function fixture(options: { generating?: boolean; enabled?: boolean; intercept?:
     goto: vi.fn(async () => { url = "https://chatgpt.com/"; }),
     url: vi.fn(() => url),
     locator: vi.fn((selector: string) => {
+      if (selector === '[data-message-author-role="user"]') return userTurnsLocator;
+      if (selector === '[data-user-message-bubble="true"]') return { count: vi.fn(async () => 0), nth: vi.fn(() => userMessage) };
       if (selector.includes("stop-button") || selector.includes("Stop generating") || selector.includes("停止產生") || selector.includes("停止生成")) return stop;
       if (selector.includes("send-button") || selector.includes('button[type="submit"]')) return send;
       if (selector.includes("#prompt-textarea") || selector.includes('[role="textbox"]')) return composer;
@@ -67,6 +81,7 @@ function fixture(options: { generating?: boolean; enabled?: boolean; intercept?:
     }) },
     waitForTimeout: vi.fn(async () => {
       polls++;
+      if (options.clearDraftAfterPoll !== undefined && polls >= options.clearDraftAfterPoll) editorText = "";
       if (polls >= (options.settleAfter ?? 2)) { generating = false; enabled = true; }
     }),
     waitForURL: vi.fn(async () => undefined),
@@ -184,6 +199,55 @@ describe("ChatGPT generic pre-send readiness (#16)", () => {
     const result = await chatgptAdapter.execute("trigger", { prompt: "safe mixed layout" }, context(f.page));
     expect(result).toMatchObject({ status: "unavailable", reason: "PRE_SEND_NOT_READY", retryable: true,
       diagnostic: { promptPresent: false, promptIntegrity: "unverifiable" } });
+    expect(f.attemptedSends).toBe(0);
+  });
+
+  it("never guesses ownership of a draft before Send (#20)", async () => {
+    const f = fixture({ existingDraft: "SYNTHETIC_TRANSIENT_PREVIOUS_SEND", clearDraftAfterPoll: 2 });
+    const result = await chatgptAdapter.execute("trigger", { prompt: "Synthetic next turn" }, context(f.page));
+    expect(result).toMatchObject({ status: "unavailable", reason: "PRE_SEND_NOT_READY", retryable: true,
+      diagnostic: { stage: "precompose", precomposeReason: "draft_present" } });
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.attemptedSends).toBe(0);
+  });
+  it("protects a persistent independent draft, with bounded nonsecret classification (#20)", async () => {
+    const draft = "CONFIDENTIAL_EXISTING_USER_DRAFT";
+    const f = fixture({ existingDraft: draft });
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => { now += 3000; return now; });
+    const result = await chatgptAdapter.execute("trigger", { prompt: "next turn" }, context(f.page));
+    expect(result).toMatchObject({ status: "unavailable", reason: "PRE_SEND_NOT_READY", retryable: true,
+      diagnostic: { stage: "precompose", precomposeReason: "draft_present" } });
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.attemptedSends).toBe(0);
+    expect(JSON.stringify(result)).not.toContain(draft);
+  });
+
+  it("distinguishes composer click failure without inserting or sending (#20)", async () => {
+    const f = fixture({ clickFailure: true });
+    const result = await chatgptAdapter.execute("trigger", { prompt: "next turn" }, context(f.page));
+    expect(result).toMatchObject({ status: "unavailable", reason: "PRE_SEND_NOT_READY",
+      diagnostic: { stage: "precompose", precomposeReason: "composer_click_failed" } });
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.attemptedSends).toBe(0);
+  });
+
+  it("does not append if a separate draft appears during focus (#20)", async () => {
+    const f = fixture({ focusDraft: "CONFIDENTIAL_RACING_DRAFT" });
+    const result = await chatgptAdapter.execute("trigger", { prompt: "next turn" }, context(f.page));
+    expect(result).toMatchObject({ status: "unavailable", reason: "PRE_SEND_NOT_READY",
+      diagnostic: { stage: "precompose", precomposeReason: "draft_present" } });
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.attemptedSends).toBe(0);
+    expect(JSON.stringify(result)).not.toContain("CONFIDENTIAL_RACING_DRAFT");
+  });
+
+  it("fails closed when existing editor content cannot be read (#20)", async () => {
+    const f = fixture({ editorReadFailure: true });
+    const result = await chatgptAdapter.execute("trigger", { prompt: "next turn" }, context(f.page));
+    expect(result).toMatchObject({ status: "unavailable", reason: "PRE_SEND_NOT_READY",
+      diagnostic: { stage: "precompose", precomposeReason: "editor_read_failed" } });
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
     expect(f.attemptedSends).toBe(0);
   });
 
