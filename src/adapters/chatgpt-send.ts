@@ -186,6 +186,7 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
   expectedId: string | null, beforeUserTurns: { bubbles: number; legacy: number }): Promise<void> {
   const clickedAt = Date.now();
   let stableSince: number | null = null;
+  let expansionAttempted = false;
   while (true) {
     const snapshot = await inspect(page, "postclick", started, initialId, expectedId);
     const currentId = safeUrl(page).id;
@@ -209,6 +210,22 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       const message = count === 1 ? contents.first() : count === 0 ? turn : null;
       const observed = message ? await message.innerText({ timeout: 500 }).catch(() => null) : null;
       newTurnMatches = typeof observed === "string" && sameSubmittedText(observed, prompt);
+      if (!newTurnMatches && typeof observed === "string" && message && !expansionAttempted) {
+        // ChatGPT can collapse long User bubbles at 10,240 visible characters.
+        // Only the new, prefix-matching bubble is eligible for a single UI-only expansion.
+        const canonical = (value: string) => value.replace(/[\s\u00a0]+/gu, " ").trim();
+        const prefix = canonical(observed);
+        if (prefix && canonical(prompt).startsWith(prefix) && prefix.length < canonical(prompt).length) {
+          const showMore = turn.getByRole("button", { name: /^(?:Show more|See more|顯示較多|顯示更多|显示更多)$/i });
+          if (await showMore.count().catch(() => 0) === 1) {
+            expansionAttempted = true;
+            if (await showMore.click({ timeout: 750 }).then(() => true).catch(() => false)) {
+              const expanded = await message.innerText({ timeout: 500 }).catch(() => null);
+              newTurnMatches = typeof expanded === "string" && sameSubmittedText(expanded, prompt);
+            }
+          }
+        }
+      }
     }
     const editor = snapshot.composer;
     let editorEmpty = false;
