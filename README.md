@@ -151,6 +151,13 @@ semantically equivalent full text, the correct conversation ID, and an empty com
 Current ChatGPT user bubbles use `[data-user-message-bubble="true"]`; the older
 `[data-message-author-role="user"]` remains a fallback. Count one DOM family at a time
 to avoid treating nested wrappers as multiple submitted turns.
+Long User bubbles may be **visually collapsed** to 10,240 displayed characters by
+ChatGPT. If the newly added bubble's displayed content is a proper prefix of the
+submitted prompt, the adapter may click exactly one recognized `Show more` /
+`顯示較多` control **inside that new bubble**, then verify the entire expanded
+text against the prompt. A prefix alone, missing expansion control, failed
+expansion, or mismatched expanded text is never evidence of successful dispatch.
+No extra Send or original Run replay is performed; this is a UI-only expansion.
 Observations must remain stable; if a click was possible but these predicates fail,
 the result is `ambiguous/SEND_OUTCOME_UNKNOWN`, never a safe-to-resend error.
 The prior 15-second precompose draft-clearing wait was removed: existing unsent drafts

@@ -3,7 +3,7 @@ import { chatgptAdapter } from "./chatgpt-adapter.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean } = {}) {
+function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; noExpand?: boolean; expandWrongText?: boolean } = {}) {
   let logicalNow = 0;
   vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   const calls: string[] = [];
@@ -18,9 +18,20 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     lastUserText = opts.postedDifferentText ? "unrelated user turn" : value;
     if (!opts.composerStuck) editorText = "";
   };
+  let expanded = false;
+  const shownText = () => opts.expandWrongText && expanded ? "mismatched synthetic content" :
+    opts.collapseLong && !expanded ? lastUserText.slice(0, 10_240) : lastUserText;
+  const content = { innerText: vi.fn(async () => shownText()) };
+  const expand = {
+    count: vi.fn(async () => opts.collapseLong && !expanded && !opts.noExpand ? 1 : 0),
+    click: vi.fn(async () => { calls.push("expand"); expanded = true; }),
+  };
   const userMessage = {
-    innerText: vi.fn(async () => lastUserText), textContent: vi.fn(async () => lastUserText),
-    locator: vi.fn(() => ({ count: vi.fn(async () => 0) })),
+    innerText: vi.fn(async () => shownText()), textContent: vi.fn(async () => shownText()),
+    locator: vi.fn((selector: string) => selector === ".whitespace-pre-wrap"
+      ? { count: vi.fn(async () => opts.collapseLong ? 1 : 0), first: vi.fn(() => content) }
+      : { count: vi.fn(async () => 0) }),
+    getByRole: vi.fn(() => expand),
   };
   const userTurnsLocator = { count: vi.fn(async () => opts.siteBubble ? 0 : userTurns), nth: vi.fn(() => userMessage) };
   const bubbleTurnsLocator = { count: vi.fn(async () => opts.siteBubble ? userTurns : 0), nth: vi.fn(() => userMessage) };
@@ -134,6 +145,36 @@ describe("ChatGPT composer compatibility", () => {
     expect(result).toMatchObject({ status: "triggered", conversationId: ID });
     expect(f.calls.filter(x => x === "send")).toHaveLength(1);
   });
+
+  it.each([false, true])("confirms only a fully expanded long User bubble (#22; resume=%s)", async (resume) => {
+    const f = fixture({ resume, siteBubble: true, collapseLong: true });
+    const prompt = "Synthetic long-only test\n\n" + "中文 Markdown **sample**\n".repeat(800)
+      + "END_OF_LONG_SYNTHETIC_PROMPT";
+    expect(prompt.length).toBeGreaterThan(10_240);
+    const result = await chatgptAdapter.execute("trigger", { prompt }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: !resume, conversationId: resume ? ID : undefined } } },
+    });
+    expect(result).toMatchObject({ status: "triggered", conversationId: ID });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    expect(f.calls.filter(x => x === "expand")).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain(prompt);
+  });
+
+  it.each([{ noExpand: true }, { expandWrongText: true }])(
+    "never accepts a collapsed-prefix or mismatched expanded message (#22)", async (flags) => {
+      const f = fixture({ siteBubble: true, collapseLong: true, ...flags });
+      let now = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+      const prompt = "Synthetic NOT_OWNED_BY_OTHER_TURN " + "long message ".repeat(1000);
+      const result = await chatgptAdapter.execute("trigger", { prompt }, {
+        browser: { page: f.page },
+        config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+      });
+      expect(result).toMatchObject({ status: "ambiguous", reason: "SEND_OUTCOME_UNKNOWN", retryable: false });
+      expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    },
+  );
 
   it("does not treat new-chat URL navigation alone as confirmed submission (#20)", async () => {
     const f = fixture({ postClickStuck: true });
