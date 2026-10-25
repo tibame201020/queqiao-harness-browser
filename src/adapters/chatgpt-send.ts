@@ -218,23 +218,18 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       if (!newTurnMatches && expansionAttempted && typeof observed === "string") reason = "expanded_text_mismatch";
       if (!newTurnMatches && typeof observed === "string" && message && !expansionAttempted) {
         // ChatGPT can collapse long User bubbles at 10,240 visible characters.
-        // Only the new, prefix-matching bubble is eligible for a single UI-only expansion.
-        const canonical = (value: string) => value.replace(/[\s\u00a0]+/gu, " ").trim();
-        const prefix = canonical(observed);
-        const isProperPrefix = !!prefix && canonical(prompt).startsWith(prefix) && prefix.length < canonical(prompt).length;
-        if (!isProperPrefix) reason = "folded_prefix_mismatch";
-        if (isProperPrefix) {
-          const showMore = turn.getByRole("button", { name: /^(?:Show more|See more|顯示較多|顯示更多|显示更多)$/i });
-          const expansionControls = await showMore.count().catch(() => 0);
-          if (expansionControls !== 1) reason = "expand_control_missing";
-          if (expansionControls === 1) {
-            reason = "expand_click_failed";
-            expansionAttempted = true;
-            if (await showMore.click({ timeout: 750 }).then(() => true).catch(() => false)) {
-              const expanded = await message.innerText({ timeout: 500 }).catch(() => null);
-              newTurnMatches = typeof expanded === "string" && sameSubmittedText(expanded, prompt);
-              reason = newTurnMatches ? "stabilizing" : "expanded_text_mismatch";
-            }
+        // Folded UI can differ from the complete semantic content. Only the newly added
+        // User Turn may be expanded, and confirmation still requires full equality.
+        const showMore = turn.getByRole("button", { name: /^(?:Show more|See more|顯示較多|顯示更多|显示更多)$/i });
+        const expansionControls = await showMore.count().catch(() => 0);
+        if (expansionControls !== 1) reason = "expand_control_missing";
+        if (expansionControls === 1) {
+          reason = "expand_click_failed";
+          expansionAttempted = true;
+          if (await showMore.click({ timeout: 750 }).then(() => true).catch(() => false)) {
+            const expanded = await message.innerText({ timeout: 500 }).catch(() => null);
+            newTurnMatches = typeof expanded === "string" && sameSubmittedText(expanded, prompt);
+            reason = newTurnMatches ? "stabilizing" : "expanded_text_mismatch";
           }
         }
       }

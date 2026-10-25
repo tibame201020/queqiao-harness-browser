@@ -152,8 +152,9 @@ Current ChatGPT user bubbles use `[data-user-message-bubble="true"]`; the older
 `[data-message-author-role="user"]` remains a fallback. Count one DOM family at a time
 to avoid treating nested wrappers as multiple submitted turns.
 Long User bubbles may be **visually collapsed** to 10,240 displayed characters by
-ChatGPT. If the newly added bubble's displayed content is a proper prefix of the
-submitted prompt, the adapter may click exactly one recognized `Show more` /
+ChatGPT. If a newly added bubble does not fully match, even when its folded
+display is not a proper prefix of the expected message,
+the adapter may click exactly one recognized `Show more` /
 `顯示較多` control **inside that new bubble**, then verify the entire expanded
 text against the prompt. A prefix alone, missing expansion control, failed
 expansion, or mismatched expanded text is never evidence of successful dispatch.

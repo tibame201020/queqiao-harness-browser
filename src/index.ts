@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { QueqiaoExtension, ToolDefinition, WorkerExtensionContext } from "@tibame201020/queqiao/extension";
 
 const EXTENSION_ID = "dev.queqiao.harness-browser";
-export const EXTENSION_VERSION = "0.5.5-rc.0";
+export const EXTENSION_VERSION = "0.5.5-rc.1";
 const workspaceId = z.string().min(1).max(64);
 const name = z.string().min(1).max(64).regex(/^[A-Za-z0-9._-]+$/);
 const INIT_SCHEMA = z.object({ workspaceId, config: z.unknown() });
