@@ -41,6 +41,9 @@ type Readiness = {
   sendActionable: boolean;
   submissionConfirmed: boolean | null;
   composerSettled: boolean | null;
+  postClickReason: "target_unconfirmed" | "new_turn_absent" | "message_unavailable"
+    | "folded_prefix_mismatch" | "expand_control_missing" | "expand_click_failed"
+    | "expanded_text_mismatch" | "full_text_mismatch" | "composer_not_settled" | "stabilizing" | null;
 };
 
 function safeUrl(page: Page): { url: string; id: string | null } {
@@ -150,7 +153,7 @@ async function inspect(page: Page, stage: Stage, started: number, initialId: str
     composerMatches, composerVisible, composerEditable, promptPresent, promptIntegrity, precomposeReason: null,
     sendSelector: selection.selector, sendMatches: selection.count, sendVisibleMatches: selection.visibleCount,
     sendVisible, sendEnabled, sendActionable: false,
-    submissionConfirmed: null, composerSettled: null,
+    submissionConfirmed: null, composerSettled: null, postClickReason: null,
   };
   return { state, composer, send: selection.locator };
 }
@@ -202,6 +205,7 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     const turnCount = useBubbles ? bubbleCount : await turns.count().catch(() => -1);
     const priorCount = useBubbles ? beforeUserTurns.bubbles : beforeUserTurns.legacy;
     let newTurnMatches = false;
+    let reason: Readiness["postClickReason"] = targetValid ? "new_turn_absent" : "target_unconfirmed";
     if (targetValid && turnCount > priorCount && priorCount >= 0) {
       const turn = turns.nth(turnCount - 1);
       // Prefer the actual bubble content, excluding copy/edit buttons owned by the outer turn.
@@ -209,19 +213,27 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       const count = await contents.count().catch(() => -1);
       const message = count === 1 ? contents.first() : count === 0 ? turn : null;
       const observed = message ? await message.innerText({ timeout: 500 }).catch(() => null) : null;
+      reason = typeof observed === "string" ? "full_text_mismatch" : "message_unavailable";
       newTurnMatches = typeof observed === "string" && sameSubmittedText(observed, prompt);
+      if (!newTurnMatches && expansionAttempted && typeof observed === "string") reason = "expanded_text_mismatch";
       if (!newTurnMatches && typeof observed === "string" && message && !expansionAttempted) {
         // ChatGPT can collapse long User bubbles at 10,240 visible characters.
         // Only the new, prefix-matching bubble is eligible for a single UI-only expansion.
         const canonical = (value: string) => value.replace(/[\s\u00a0]+/gu, " ").trim();
         const prefix = canonical(observed);
-        if (prefix && canonical(prompt).startsWith(prefix) && prefix.length < canonical(prompt).length) {
+        const isProperPrefix = !!prefix && canonical(prompt).startsWith(prefix) && prefix.length < canonical(prompt).length;
+        if (!isProperPrefix) reason = "folded_prefix_mismatch";
+        if (isProperPrefix) {
           const showMore = turn.getByRole("button", { name: /^(?:Show more|See more|顯示較多|顯示更多|显示更多)$/i });
-          if (await showMore.count().catch(() => 0) === 1) {
+          const expansionControls = await showMore.count().catch(() => 0);
+          if (expansionControls !== 1) reason = "expand_control_missing";
+          if (expansionControls === 1) {
+            reason = "expand_click_failed";
             expansionAttempted = true;
             if (await showMore.click({ timeout: 750 }).then(() => true).catch(() => false)) {
               const expanded = await message.innerText({ timeout: 500 }).catch(() => null);
               newTurnMatches = typeof expanded === "string" && sameSubmittedText(expanded, prompt);
+              reason = newTurnMatches ? "stabilizing" : "expanded_text_mismatch";
             }
           }
         }
@@ -239,6 +251,8 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     }
     snapshot.state.submissionConfirmed = newTurnMatches;
     snapshot.state.composerSettled = editorEmpty;
+    snapshot.state.postClickReason = !targetValid ? "target_unconfirmed"
+      : newTurnMatches ? editorEmpty ? "stabilizing" : "composer_not_settled" : reason;
     const now = Date.now();
     if (targetValid && newTurnMatches && editorEmpty) {
       stableSince ??= now;

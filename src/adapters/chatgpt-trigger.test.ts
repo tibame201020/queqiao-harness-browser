@@ -176,6 +176,28 @@ describe("ChatGPT composer compatibility", () => {
     },
   );
 
+  it.each([{ noExpand: true }, { expandWrongText: true }])(
+    "reports the exact, nonsecret post-click proof blocker (#24 RED)", async flags => {
+      const f = fixture({ siteBubble: true, collapseLong: true, ...flags });
+      let now = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+      const prompt = "Synthetic assembled prompt " + "long text section ".repeat(900);
+      const result = await chatgptAdapter.execute("trigger", { prompt }, {
+        browser: { page: f.page },
+        config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+      });
+      expect(result).toMatchObject({
+        status: "ambiguous", retryable: false,
+        diagnostic: {
+          stage: "postclick",
+          postClickReason: flags.noExpand ? "expand_control_missing" : "expanded_text_mismatch",
+        },
+      });
+      expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+      expect(JSON.stringify(result)).not.toContain(prompt);
+    },
+  );
+
   it("does not treat new-chat URL navigation alone as confirmed submission (#20)", async () => {
     const f = fixture({ postClickStuck: true });
     let now = 0;

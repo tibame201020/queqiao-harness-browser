@@ -170,7 +170,10 @@ persist the existing replay guard. A nonsecret structured diagnostic includes
 stage/elapsed time, stripped origin/path and conversation identity,
 generation/editor state, raw and visible Send selector counts and
 enabled/actionable flags, fixed post-click `submissionConfirmed` and
-`composerSettled` booleans, plus fixed `promptIntegrity` status
+`composerSettled` booleans and a fixed-schema `postClickReason` value distinguishing
+new-turn detection, content read, folded-prefix proof, expansion control/click,
+expanded full-text mismatch, editor settlement and target identity. None of these
+fields include message excerpts or raw DOM. Also includes fixed `promptIntegrity` status
 (`complete`, `empty`, `truncated`, `mismatch`, `unverifiable`); never prompt,
 DOM text, cookies or credentials. Actual truncation and unsupported mixed DOM
 layouts fail closed before a real click; harmless paragraph line-break
