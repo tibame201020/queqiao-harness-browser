@@ -3,7 +3,7 @@ import { chatgptAdapter } from "./chatgpt-adapter.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; noExpand?: boolean; expandWrongText?: boolean } = {}) {
+function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean } = {}) {
   let logicalNow = 0;
   vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   const calls: string[] = [];
@@ -20,7 +20,7 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
   };
   let expanded = false;
   const shownText = () => opts.expandWrongText && expanded ? "mismatched synthetic content" :
-    opts.collapseLong && !expanded ? lastUserText.slice(0, 10_240) : lastUserText;
+    opts.collapseLong && !expanded ? (opts.foldedDifferent ? "… " : "") + lastUserText.slice(0, 10_240) : lastUserText;
   const content = { innerText: vi.fn(async () => shownText()) };
   const expand = {
     count: vi.fn(async () => opts.collapseLong && !expanded && !opts.noExpand ? 1 : 0),
@@ -173,6 +173,59 @@ describe("ChatGPT composer compatibility", () => {
       });
       expect(result).toMatchObject({ status: "ambiguous", reason: "SEND_OUTCOME_UNKNOWN", retryable: false });
       expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    },
+  );
+
+  it.each([{ noExpand: true }, { expandWrongText: true }])(
+    "reports the exact, nonsecret post-click proof blocker (#24 RED)", async flags => {
+      const f = fixture({ siteBubble: true, collapseLong: true, ...flags });
+      let now = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+      const prompt = "Synthetic assembled prompt " + "long text section ".repeat(900);
+      const result = await chatgptAdapter.execute("trigger", { prompt }, {
+        browser: { page: f.page },
+        config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+      });
+      expect(result).toMatchObject({
+        status: "ambiguous", retryable: false,
+        diagnostic: {
+          stage: "postclick",
+          postClickReason: flags.noExpand ? "expand_control_missing" : "expanded_text_mismatch",
+        },
+      });
+      expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+      expect(JSON.stringify(result)).not.toContain(prompt);
+    },
+  );
+
+  it.each([false, true])("confirms only the full expanded text when the folded display is not an expected prefix (#24; resume=%s)", async resume => {
+    const f = fixture({ resume, siteBubble: true, collapseLong: true, foldedDifferent: true });
+    const prompt = "Synthetic assembled prompt " + "中文 Markdown sample ".repeat(820)
+      + "ORIGINAL_EXPECTED_TAIL";
+    expect(prompt.length).toBeGreaterThan(10_240);
+    const result = await chatgptAdapter.execute("trigger", { prompt }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: !resume, conversationId: resume ? ID : undefined } } },
+    });
+    expect(result).toMatchObject({ status: "triggered", conversationId: ID });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    expect(f.calls.filter(x => x === "expand")).toHaveLength(1);
+  });
+
+  it.each([{ noExpand: true }, { expandWrongText: true }])(
+    "still fails closed on non-prefix folded text without trustworthy full equality (#24)", async flags => {
+      const f = fixture({ siteBubble: true, collapseLong: true, foldedDifferent: true, ...flags });
+      let now = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+      const prompt = "Synthetic assembled prompt " + "中文 Markdown sample ".repeat(820)
+        + "ORIGINAL_EXPECTED_TAIL";
+      const result = await chatgptAdapter.execute("trigger", { prompt }, {
+        browser: { page: f.page },
+        config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+      });
+      expect(result).toMatchObject({ status: "ambiguous", retryable: false });
+      expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+      expect(JSON.stringify(result)).not.toContain(prompt);
     },
   );
 
