@@ -184,6 +184,45 @@ function sameSubmittedText(actual: string, expected: string): boolean {
   return semantic(actual) === semantic(expected);
 }
 
+/**
+ * Source Markdown is not a source-preserving representation of ChatGPT's rendered
+ * user bubble. Accept only a small, deletion-only representation difference,
+ * never a substituted or inserted content span. Caller must prove a single new User Turn,
+ * a formatted code DOM node, the target conversation and a settled editor.
+ * Raw prompt and rendered text never enter a receipt.
+ */
+function correlatedFormattedRender(rendered: string, source: string): boolean {
+  const normalize = (v: string) => v.replace(/[\s\u00a0]+/gu, " ").trim();
+  const a = normalize(rendered);
+  const b = normalize(source);
+  if (a.length < 256 || b.length < 256) return false;
+  // The real authenticated code-block reproductions omitted exactly 12 source characters.
+  // Do not equate 85% matching context with original content integrity.
+  const missing = b.length - a.length;
+  if (missing <= 0 || missing > 24) return false;
+  let prefix = 0;
+  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
+  let suffix = 0;
+  while (suffix < a.length - prefix && suffix < b.length - prefix
+    && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++;
+  if (prefix < 64 || suffix < 64) return false;
+  // The entire rendered message must be an ordered subsequence of the original,
+  // with at most 24 source-only characters. Even a same-length content replacement fails.
+  let sourceIndex = 0;
+  let renderedIndex = 0;
+  let omitted = 0;
+  while (sourceIndex < b.length && renderedIndex < a.length) {
+    if (b[sourceIndex] === a[renderedIndex]) {
+      sourceIndex++;
+      renderedIndex++;
+    } else {
+      sourceIndex++;
+      if (++omitted > 24) return false;
+    }
+  }
+  return renderedIndex === a.length && omitted + b.length - sourceIndex === missing;
+}
+
 /** Keep the same Browser Session open until this particular submitted User Turn is visible and its editor settles. */
 async function awaitPostClickSettlement(page: Page, prompt: string, started: number, initialId: string | null,
   expectedId: string | null, beforeUserTurns: { bubbles: number; legacy: number }): Promise<void> {
@@ -206,7 +245,7 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     const priorCount = useBubbles ? beforeUserTurns.bubbles : beforeUserTurns.legacy;
     let newTurnMatches = false;
     let reason: Readiness["postClickReason"] = targetValid ? "new_turn_absent" : "target_unconfirmed";
-    if (targetValid && turnCount > priorCount && priorCount >= 0) {
+    if (targetValid && turnCount === priorCount + 1 && priorCount >= 0) {
       const turn = turns.nth(turnCount - 1);
       // Prefer the actual bubble content, excluding copy/edit buttons owned by the outer turn.
       const contents = turn.locator(".whitespace-pre-wrap");
@@ -214,12 +253,16 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       const message = count === 1 ? contents.first() : count === 0 ? turn : null;
       const observed = message ? await message.innerText({ timeout: 500 }).catch(() => null) : null;
       reason = typeof observed === "string" ? "full_text_mismatch" : "message_unavailable";
-      newTurnMatches = typeof observed === "string" && sameSubmittedText(observed, prompt);
+      const hasFormattedCode = !!message && await message.locator("pre code").count().catch(() => 0) > 0;
+      const confirmsContent = (actual: string | null) => typeof actual === "string"
+        && (sameSubmittedText(actual, prompt)
+          || (hasFormattedCode && correlatedFormattedRender(actual, prompt)));
+      newTurnMatches = confirmsContent(observed);
       if (!newTurnMatches && expansionAttempted && typeof observed === "string") reason = "expanded_text_mismatch";
       if (!newTurnMatches && typeof observed === "string" && message && !expansionAttempted) {
         // ChatGPT can collapse long User bubbles at 10,240 visible characters.
         // Folded UI can differ from the complete semantic content. Only the newly added
-        // User Turn may be expanded, and confirmation still requires full equality.
+        // User Turn may be expanded; exact content or conservative structured Markdown correlation is required.
         const showMore = turn.getByRole("button", { name: /^(?:Show more|See more|顯示較多|顯示更多|显示更多)$/i });
         const expansionControls = await showMore.count().catch(() => 0);
         if (expansionControls !== 1) reason = "expand_control_missing";
@@ -228,7 +271,7 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
           expansionAttempted = true;
           if (await showMore.click({ timeout: 750 }).then(() => true).catch(() => false)) {
             const expanded = await message.innerText({ timeout: 500 }).catch(() => null);
-            newTurnMatches = typeof expanded === "string" && sameSubmittedText(expanded, prompt);
+            newTurnMatches = confirmsContent(expanded);
             reason = newTurnMatches ? "stabilizing" : "expanded_text_mismatch";
           }
         }

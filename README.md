@@ -147,7 +147,14 @@ A Playwright trial click verifies actionability before the **one** real click.
 After the single real click, the ChatGPT Site Adapter retains the **same Browser Session**.
 A resumed conversation does not count an unchanged `/c/<id>` URL as successful submission:
 it waits at least 3 seconds and at most 5 seconds for a newly added User Turn with
-semantically equivalent full text, the correct conversation ID, and an empty composer.
+a correct conversation identity, exactly one new attributable User Turn, and an empty
+composer. Exact source-to-rendered text equality is primary proof. For Markdown code
+blocks only, a conservative alternate proof requires a new turn with a real `pre code`
+node, a rendered message that is an ordered subsequence of the exact validated
+source with **1–24 source-only characters removed and no substituted or inserted
+content**, matching leading/trailing 64+ character regions, and the verified
+presend editor contents. This is a narrow formatting-correlation proof, not a guarantee
+that ChatGPT's renderer preserves source Markdown.
 Current ChatGPT user bubbles use `[data-user-message-bubble="true"]`; the older
 `[data-message-author-role="user"]` remains a fallback. Count one DOM family at a time
 to avoid treating nested wrappers as multiple submitted turns.
