@@ -3,7 +3,7 @@ import { chatgptAdapter } from "./chatgpt-adapter.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; concurrentNewTurn?: boolean } = {}) {
+function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean } = {}) {
   let logicalNow = 0;
   vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   const calls: string[] = [];
@@ -20,8 +20,13 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
   };
   let expanded = false;
   const shownText = () => opts.renderedFormatted && lastUserText.length > 700
-    ? (lastUserText.slice(0, 380) + lastUserText.slice(392)).slice(0, opts.changedRenderedTail ? -150 : undefined)
-      + (opts.changedRenderedTail ? "UNRELATED_CONTENT_" + "X".repeat(132) : "")
+    ? (() => {
+      const basic = lastUserText.slice(0, 380) + lastUserText.slice(392);
+      const changedMiddle = opts.changedRenderedMiddle
+        ? basic.slice(0, 900) + "Z".repeat(84) + basic.slice(984) : basic;
+      return changedMiddle.slice(0, opts.changedRenderedTail ? -150 : undefined)
+        + (opts.changedRenderedTail ? "UNRELATED_CONTENT_" + "X".repeat(132) : "");
+    })()
     : opts.expandWrongText && expanded ? "mismatched synthetic content" :
     opts.collapseLong && !expanded ? (opts.foldedDifferent ? "… " : "") + lastUserText.slice(0, 10_240) : lastUserText;
   const content = { innerText: vi.fn(async () => shownText()), locator: vi.fn(() => ({
@@ -266,6 +271,21 @@ describe("ChatGPT composer compatibility", () => {
       expect(JSON.stringify(result)).not.toContain(prompt);
     },
   );
+
+  it("does not accept same-length substituted middle even if source/rendered prefix and suffix exceed 85% (#24)", async () => {
+    const f = fixture({ siteBubble: true, renderedFormatted: true, changedRenderedMiddle: true });
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+    const prompt = "Proof-only synthetic source: " + "A".repeat(340)
+      + "~~~code sample~~~" + "one isolated markdown paragraph ".repeat(305)
+      + "EXACT_UNIQUE_SYNTHETIC_TAIL";
+    const result = await chatgptAdapter.execute("trigger", { prompt }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(result).toMatchObject({ status: "ambiguous", retryable: false });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
 
   it("fails closed when two User Turns appear after one owned Send (#24 concurrent turn guard)", async () => {
     const f = fixture({ siteBubble: true, concurrentNewTurn: true });

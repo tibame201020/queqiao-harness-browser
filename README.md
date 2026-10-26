@@ -150,9 +150,10 @@ it waits at least 3 seconds and at most 5 seconds for a newly added User Turn wi
 a correct conversation identity, exactly one new attributable User Turn, and an empty
 composer. Exact source-to-rendered text equality is primary proof. For Markdown code
 blocks only, a conservative alternate proof requires a new turn with a real `pre code`
-node, source/rendered length within 2%, identical leading/trailing 64+ character
-regions covering at least 85% of the full message, and the verified presend
-editor contents. This is a narrow formatting-correlation proof, not a guarantee
+node, a rendered message that is an ordered subsequence of the exact validated
+source with **1–24 source-only characters removed and no substituted or inserted
+content**, matching leading/trailing 64+ character regions, and the verified
+presend editor contents. This is a narrow formatting-correlation proof, not a guarantee
 that ChatGPT's renderer preserves source Markdown.
 Current ChatGPT user bubbles use `[data-user-message-bubble="true"]`; the older
 `[data-message-author-role="user"]` remains a fallback. Count one DOM family at a time

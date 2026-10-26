@@ -186,8 +186,8 @@ function sameSubmittedText(actual: string, expected: string): boolean {
 
 /**
  * Source Markdown is not a source-preserving representation of ChatGPT's rendered
- * user bubble. Accept only a *localized* renderer difference surrounded by large,
- * identical source regions. Caller must independently prove a single new User Turn,
+ * user bubble. Accept only a small, deletion-only representation difference,
+ * never a substituted or inserted content span. Caller must prove a single new User Turn,
  * a formatted code DOM node, the target conversation and a settled editor.
  * Raw prompt and rendered text never enter a receipt.
  */
@@ -196,14 +196,31 @@ function correlatedFormattedRender(rendered: string, source: string): boolean {
   const a = normalize(rendered);
   const b = normalize(source);
   if (a.length < 256 || b.length < 256) return false;
-  if (Math.abs(a.length - b.length) > Math.max(24, Math.floor(b.length * 0.02))) return false;
+  // The real authenticated code-block reproductions omitted exactly 12 source characters.
+  // Do not equate 85% matching context with original content integrity.
+  const missing = b.length - a.length;
+  if (missing <= 0 || missing > 24) return false;
   let prefix = 0;
   while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
   let suffix = 0;
   while (suffix < a.length - prefix && suffix < b.length - prefix
     && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++;
-  return prefix >= 64 && suffix >= 64
-    && (prefix + suffix) / Math.max(a.length, b.length) >= 0.85;
+  if (prefix < 64 || suffix < 64) return false;
+  // The entire rendered message must be an ordered subsequence of the original,
+  // with at most 24 source-only characters. Even a same-length content replacement fails.
+  let sourceIndex = 0;
+  let renderedIndex = 0;
+  let omitted = 0;
+  while (sourceIndex < b.length && renderedIndex < a.length) {
+    if (b[sourceIndex] === a[renderedIndex]) {
+      sourceIndex++;
+      renderedIndex++;
+    } else {
+      sourceIndex++;
+      if (++omitted > 24) return false;
+    }
+  }
+  return renderedIndex === a.length && omitted + b.length - sourceIndex === missing;
 }
 
 /** Keep the same Browser Session open until this particular submitted User Turn is visible and its editor settles. */
