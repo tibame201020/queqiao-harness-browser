@@ -3,7 +3,7 @@ import { chatgptAdapter } from "./chatgpt-adapter.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean } = {}) {
+function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; concurrentNewTurn?: boolean } = {}) {
   let logicalNow = 0;
   vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   const calls: string[] = [];
@@ -14,14 +14,19 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
   let pendingUserText: string | null = null;
   let polls = 0;
   const completeUserTurn = (value: string) => {
-    userTurns++;
+    userTurns += opts.concurrentNewTurn ? 2 : 1;
     lastUserText = opts.postedDifferentText ? "unrelated user turn" : value;
     if (!opts.composerStuck) editorText = "";
   };
   let expanded = false;
-  const shownText = () => opts.expandWrongText && expanded ? "mismatched synthetic content" :
+  const shownText = () => opts.renderedFormatted && lastUserText.length > 700
+    ? (lastUserText.slice(0, 380) + lastUserText.slice(392)).slice(0, opts.changedRenderedTail ? -150 : undefined)
+      + (opts.changedRenderedTail ? "UNRELATED_CONTENT_" + "X".repeat(132) : "")
+    : opts.expandWrongText && expanded ? "mismatched synthetic content" :
     opts.collapseLong && !expanded ? (opts.foldedDifferent ? "… " : "") + lastUserText.slice(0, 10_240) : lastUserText;
-  const content = { innerText: vi.fn(async () => shownText()) };
+  const content = { innerText: vi.fn(async () => shownText()), locator: vi.fn(() => ({
+    count: vi.fn(async () => opts.renderedFormatted && !opts.noFormattedDOM ? 1 : 0),
+  })) };
   const expand = {
     count: vi.fn(async () => opts.collapseLong && !expanded && !opts.noExpand ? 1 : 0),
     click: vi.fn(async () => { calls.push("expand"); expanded = true; }),
@@ -29,7 +34,7 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
   const userMessage = {
     innerText: vi.fn(async () => shownText()), textContent: vi.fn(async () => shownText()),
     locator: vi.fn((selector: string) => selector === ".whitespace-pre-wrap"
-      ? { count: vi.fn(async () => opts.collapseLong ? 1 : 0), first: vi.fn(() => content) }
+      ? { count: vi.fn(async () => (opts.collapseLong || opts.renderedFormatted) ? 1 : 0), first: vi.fn(() => content) }
       : { count: vi.fn(async () => 0) }),
     getByRole: vi.fn(() => expand),
   };
@@ -228,6 +233,51 @@ describe("ChatGPT composer compatibility", () => {
       expect(JSON.stringify(result)).not.toContain(prompt);
     },
   );
+
+  it.each([false, true])("accepts attributable formatted User Turn despite a 12-character renderer delta (#24; resume=%s)", async resume => {
+    const f = fixture({ siteBubble: true, resume, renderedFormatted: true });
+    const prompt = "Proof-only synthetic source: " + "A".repeat(340)
+      + "~~~code sample~~~" + "one isolated markdown paragraph ".repeat(305)
+      + "EXACT_UNIQUE_SYNTHETIC_TAIL";
+    expect(prompt.length).toBeGreaterThan(8_000);
+    const result = await chatgptAdapter.execute("trigger", { prompt }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: !resume, conversationId: resume ? ID : undefined } } },
+    });
+    expect(result).toMatchObject({ status: "triggered", conversationId: ID });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain(prompt);
+  });
+
+  it.each([{ noFormattedDOM: true }, { changedRenderedTail: true }])(
+    "fails closed for unrelated rendered content or missing formatting proof (#24)", async extra => {
+      const f = fixture({ siteBubble: true, renderedFormatted: true, ...extra });
+      let now = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+      const prompt = "Proof-only synthetic source: " + "A".repeat(340)
+        + "~~~code sample~~~" + "one isolated markdown paragraph ".repeat(305)
+        + "EXACT_UNIQUE_SYNTHETIC_TAIL";
+      const result = await chatgptAdapter.execute("trigger", { prompt }, {
+        browser: { page: f.page },
+        config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+      });
+      expect(result).toMatchObject({ status: "ambiguous", retryable: false });
+      expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+      expect(JSON.stringify(result)).not.toContain(prompt);
+    },
+  );
+
+  it("fails closed when two User Turns appear after one owned Send (#24 concurrent turn guard)", async () => {
+    const f = fixture({ siteBubble: true, concurrentNewTurn: true });
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+    const result = await chatgptAdapter.execute("trigger", { prompt: "synthetic concurrent turn guard" }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(result).toMatchObject({ status: "ambiguous", retryable: false });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
 
   it("does not treat new-chat URL navigation alone as confirmed submission (#20)", async () => {
     const f = fixture({ postClickStuck: true });
