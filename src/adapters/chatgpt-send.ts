@@ -24,6 +24,18 @@ const GENERATION = [
 
 type Stage = "precompose" | "presend" | "click" | "postclick";
 type SendSelection = { locator: Locator | null; selector: "form" | "legacy" | "none"; count: number; visibleCount: number };
+type TurnCountSnapshot = { bubbles: number; legacy: number };
+type PostClickTurnEvidence = {
+  before: TurnCountSnapshot;
+  current: TurnCountSnapshot;
+  min: TurnCountSnapshot;
+  max: TurnCountSnapshot;
+  checks: number;
+  observedNewTurn: boolean;
+  verifiedNewTurn: boolean;
+  samples: { bubbles: number; legacy: number; correctTarget: boolean; editorEmpty: boolean; generationActive: boolean }[];
+};
+
 type Readiness = {
   stage: Stage;
   elapsedMs: number;
@@ -45,6 +57,7 @@ type Readiness = {
   sendActionable: boolean;
   submissionConfirmed: boolean | null;
   composerSettled: boolean | null;
+  turnEvidence?: PostClickTurnEvidence;
   postClickReason: "target_unconfirmed" | "new_turn_absent" | "message_unavailable"
     | "folded_prefix_mismatch" | "expand_control_missing" | "expand_click_failed"
     | "expanded_text_mismatch" | "full_text_mismatch" | "composer_not_settled" | "stabilizing" | null;
@@ -242,6 +255,16 @@ function expectedInlineCodePresentation(source: string): { rendered: string; cod
 async function awaitPostClickSettlement(page: Page, prompt: string, started: number, initialId: string | null,
   expectedId: string | null, beforeUserTurns: { bubbles: number; legacy: number }): Promise<void> {
   const clickedAt = Date.now();
+  const evidence: PostClickTurnEvidence = {
+    before: { ...beforeUserTurns },
+    current: { ...beforeUserTurns },
+    min: { ...beforeUserTurns },
+    max: { ...beforeUserTurns },
+    checks: 0,
+    observedNewTurn: false,
+    verifiedNewTurn: false,
+    samples: [],
+  };
   let stableSince: number | null = null;
   let expansionAttempted = false;
   let ownedProvisionalUrl: string | null = null;
@@ -261,7 +284,8 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     const bubbleCount = await bubbles.count().catch(() => -1);
     const useBubbles = bubbleCount > 0;
     const turns = useBubbles ? bubbles : page.locator(LEGACY_USER_TURNS);
-    const turnCount = useBubbles ? bubbleCount : await turns.count().catch(() => -1);
+    const legacyCount = await page.locator(LEGACY_USER_TURNS).count().catch(() => -1);
+    const turnCount = useBubbles ? bubbleCount : legacyCount;
     const priorCount = useBubbles ? beforeUserTurns.bubbles : beforeUserTurns.legacy;
     let newTurnMatches = false;
     let reason: Readiness["postClickReason"] = targetValid ? "new_turn_absent" : "target_unconfirmed";
@@ -319,6 +343,28 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       editorEmpty = typeof rendered === "string" && typeof raw === "string"
         && !rendered.trim() && !raw.trim();
     }
+    evidence.checks++;
+    evidence.current = { bubbles: bubbleCount, legacy: legacyCount };
+    for (const kind of ["bubbles", "legacy"] as const) {
+      const value = evidence.current[kind];
+      if (value >= 0) {
+        evidence.min[kind] = Math.min(evidence.min[kind], value);
+        evidence.max[kind] = Math.max(evidence.max[kind], value);
+      }
+    }
+    evidence.observedNewTurn ||= priorCount >= 0 && turnCount === priorCount + 1;
+    evidence.verifiedNewTurn ||= newTurnMatches;
+    evidence.samples.push({
+      bubbles: bubbleCount, legacy: legacyCount,
+      correctTarget: targetValid, editorEmpty, generationActive: snapshot.state.generationActive,
+    });
+    // Keep two earliest and six latest state observations; never include messages, DOM or URL.
+    if (evidence.samples.length > 8) evidence.samples.splice(2, 1);
+    snapshot.state.turnEvidence = {
+      ...evidence, before: { ...evidence.before }, current: { ...evidence.current },
+      min: { ...evidence.min }, max: { ...evidence.max },
+      samples: evidence.samples.map(item => ({ ...item })),
+    };
     // Provisional local-chatgpt IDs are NOT saved Conversation IDs and never confirm Send.
     snapshot.state.submissionConfirmed = targetValid && newTurnMatches;
     snapshot.state.composerSettled = editorEmpty;

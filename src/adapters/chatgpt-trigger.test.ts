@@ -508,6 +508,35 @@ describe("ChatGPT composer compatibility", () => {
     },
   );
 
+
+  it("reports privacy-safe turn baselines and observed counts for resumed Send with no new User turn", async () => {
+    const f = fixture({ resume: true, siteBubble: true, postClickStuck: true });
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+    const prompt = "SYNTHETIC_RESUMED_DIAGNOSTIC_PRIVATE_CONTENT";
+    const result = await chatgptAdapter.execute("trigger", { prompt }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: false, conversationId: ID } } },
+    });
+    expect(result).toMatchObject({
+      status: "ambiguous", reason: "SEND_OUTCOME_UNKNOWN", retryable: false,
+      diagnostic: {
+        postClickReason: "new_turn_absent",
+        turnEvidence: {
+          before: { bubbles: 1, legacy: 0 },
+          current: { bubbles: 1, legacy: 0 },
+          observedNewTurn: false,
+          verifiedNewTurn: false,
+        },
+      },
+    });
+    const evidence = (result as { diagnostic: { turnEvidence: { checks: number; samples: unknown[] } } }).diagnostic.turnEvidence;
+    expect(evidence.checks).toBeGreaterThan(0);
+    expect(evidence.samples.length).toBeLessThanOrEqual(8);
+    expect(JSON.stringify(result)).not.toContain(prompt);
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
   it("preserves an existing conversation target without creating another conversation", async () => {
     const f = fixture({ resume: true });
     const result = await chatgptAdapter.execute("trigger", { prompt: "resumed generic conversation" }, {
