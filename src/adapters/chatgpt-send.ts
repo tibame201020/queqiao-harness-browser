@@ -394,7 +394,20 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
   }
 }
 
-export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?: string): Promise<number> {
+export async function reconcileChatGptSend(page: Page, prompt: string, expectedId: string,
+  baseline: { bubbles: number; legacy: number }): Promise<boolean> {
+  // Read-only re-observation of the *original* Send. No composing, click or new dispatch.
+  if (safeUrl(page).id !== expectedId) return false;
+  try {
+    await awaitPostClickSettlement(page, prompt, Date.now(), expectedId, expectedId, baseline);
+    return true;
+  } catch {
+    return false; // Unknown remains locked. A caller may repeat this read-only action later.
+  }
+}
+
+export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?: string,
+  beforeClick?: (baseline: { bubbles: number; legacy: number }) => Promise<void>): Promise<number> {
   const started = Date.now();
   const initialId = safeUrl(page).id;
   const targetId = expectedId ?? null;
@@ -478,6 +491,9 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
   ]);
   if (beforeBubbles < 0 || beforeLegacy < 0) throw diagnostic("PRE_SEND_NOT_READY", state.state);
   const beforeUserTurns = { bubbles: beforeBubbles, legacy: beforeLegacy };
+  // Persist original ownership proof BEFORE the one possible Send.
+  // Any persistence failure happens before click and must not dispatch.
+  await beforeClick?.(beforeUserTurns);
   // From this point even a timeout is ambiguous: never retry the actual dispatch.
   try {
     await state.send!.click({ timeout: 8000 });

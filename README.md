@@ -206,6 +206,32 @@ fields include message excerpts or raw DOM. Also includes fixed `promptIntegrity
 DOM text, cookies or credentials. Actual truncation and unsupported mixed DOM
 layouts fail closed before a real click; harmless paragraph line-break
 normalization is accepted only when the entire reconstructed input matches.
+**Issue #30 Resume-first (ChatGPT existing saved Conversation):** before the single actual
+Send click, Harness persists an original private Send Attempt with a UUID,
+complete exact source, preceding User Turn counts, saved Conversation ID and
+a Browser Profile binding under the owner's local Harness profile
+(`send-attempts/<attemptId>.json`, owner-only permissions; never commit this
+file or return the source in tools/logs). A failed/uncertain Send returns
+`ambiguous/submissionState=unknown` with its `attemptId`; the next Trigger
+stays blocked even after a Runner restart. Call
+`harness_run({name,action:"resume",args:{attemptId}})` to **reopen the original
+saved Conversation and verify the exact original newly attributable User Turn
+read-only, without typing or clicking Send**. Resume returns `submitted`
+(only on complete matching ownership and settled editor) or
+`pending/submissionState=unknown` (no proof yet). Resume is idempotent;
+on verified success Harness clears only that attempt's ambiguity lock.
+Repeat Resume later if the User Turn has not hydrated. The existing `collect`
+action then independently handles the Assistant response; it does not
+need to run inside the Send confirmation window.
+This version deliberately supports **only existing saved conversations**.
+An original new-chat Send without a validated saved ID cannot be safely
+resolved by guessing a provisional URL; it stays unknown. Reconfigured
+Browser Profiles or Conversation IDs also cannot confirm older attempts.
+The original plaintext source remains exclusively in the private local
+runtime receipt until explicitly removed by the profile owner; there is no
+automatic retention deletion of unresolved evidence. Never store that
+receipt in GitHub, CI artifacts or public logs.
+
 Any ambiguous dispatch requires external reconciliation before another trigger. Use an authenticated browser profile for real UI smoke tests;
 do not commit profiles, cookies, conversation IDs or live receipts.
 ChatGPT actions:

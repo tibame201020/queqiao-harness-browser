@@ -117,6 +117,37 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
 afterEach(() => vi.restoreAllMocks());
 
 describe("ChatGPT composer compatibility", () => {
+  it("persists exact pre-click Resume baseline once and never exposes source in the acknowledgement (#30)", async () => {
+    const f = fixture({ resume: true, siteBubble: true });
+    const original = "SYNTHETIC_CAPTURE_PRIOR_TO_ONE_SEND";
+    const beforeSend = vi.fn(async (_prompt: string, _info: unknown) => undefined);
+    const outcome = await chatgptAdapter.execute("trigger", { prompt: original }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: false, conversationId: ID } } },
+      beforeSend,
+    });
+    expect(outcome).toMatchObject({ status: "triggered", submissionState: "submitted" });
+    expect(beforeSend).toHaveBeenCalledExactlyOnceWith(original, {
+      conversationId: ID, baseline: { bubbles: 1, legacy: 0 },
+    });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    expect(JSON.stringify(outcome)).not.toContain(original);
+  });
+
+  it("never records a possible Send for an unrelated preexisting draft (#30)", async () => {
+    const f = fixture({ resume: true, siteBubble: true, initialDraft: "EXTERNAL_USER_DRAFT" });
+    const beforeSend = vi.fn();
+    const result = await chatgptAdapter.execute("trigger", { prompt: "SYNTHETIC_NO_DISPATCH" }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: false, conversationId: ID } } },
+      beforeSend,
+    });
+    expect(result).toMatchObject({ status: "unavailable", submissionState: "not_sent" });
+    expect(beforeSend).not.toHaveBeenCalled();
+    expect(f.calls.filter(x => x === "send")).toHaveLength(0);
+  });
+
+
   it("sends with the current contenteditable textbox and its own form submit control", async () => {
     const f = fixture();
     const result = await chatgptAdapter.execute("trigger", { prompt: "Gate C harness probe" }, {
