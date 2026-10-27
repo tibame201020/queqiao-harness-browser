@@ -7,7 +7,7 @@ import {
   conversationIdFromHref,
   initialAssistantCollectState,
 } from "./chatgpt.js";
-import { ChatGptSendError, isChatGptGenerationActive, postClickAmbiguity, sendChatGptPrompt } from "./chatgpt-send.js";
+import { ChatGptSendError, isChatGptGenerationActive, postClickAmbiguity, reconcileChatGptSend, sendChatGptPrompt } from "./chatgpt-send.js";
 import { deleteConversation, listProjectConversations, listProjects, openConversation, openProject, projectConversationUrl, startProjectNewConversation } from "./chatgpt-projects.js";
 
 const conversationIdSchema = z.string().uuid();
@@ -155,7 +155,8 @@ async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapter
   return {};
 }
 
-async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>) {
+async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>,
+  beforeSend?: (prompt: string, input: { conversationId: string | null; baseline: { bubbles: number; legacy: number } }) => Promise<void>) {
   const prompt = String(args.prompt || cfg.trigger.prompt || "");
   if (!prompt) throw new Error("chatgpt trigger requires trigger.prompt or args.prompt");
 
@@ -163,7 +164,8 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
   const page = session.page;
   let started: number;
   try {
-    started = await sendChatGptPrompt(page, prompt, cfg.conversation.newChatEachRun ? undefined : cfg.conversation.conversationId);
+    started = await sendChatGptPrompt(page, prompt, cfg.conversation.newChatEachRun ? undefined : cfg.conversation.conversationId,
+      beforeSend ? baseline => beforeSend(prompt, { conversationId: cfg.conversation.newChatEachRun ? null : cfg.conversation.conversationId!, baseline }) : undefined);
   } catch (error) {
     if (!(error instanceof ChatGptSendError)) throw error;
     return error.code === "DISPATCH_AMBIGUOUS"
@@ -188,6 +190,30 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
   if (!conversationId || (!cfg.conversation.newChatEachRun && conversationId !== cfg.conversation.conversationId)) return notConfirmed();
   const url = target.projectId ? projectConversationUrl(target.projectId, conversationId) : transientUrl;
   return { status: "triggered", submissionState: "submitted", url, conversationId };
+}
+
+// The Runner supplies this original receipt from private local storage.
+async function resumeSend(session: BrowserSession, args: Record<string, unknown>) {
+  const input = z.object({
+    conversationId: conversationIdSchema,
+    prompt: z.string().min(1),
+    baseline: z.object({ bubbles: z.number().int().min(0), legacy: z.number().int().min(0) }),
+  }).strict().parse(args);
+  const url = `https://chatgpt.com/c/${input.conversationId}`;
+  const page = session.page;
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (new URL(page.url()).origin !== "https://chatgpt.com"
+      || conversationIdFromHref(page.url()) !== input.conversationId) return {
+      status: "pending", submissionState: "unknown", retryable: false, canResume: true,
+    };
+    const confirmed = await reconcileChatGptSend(page, input.prompt, input.conversationId, input.baseline);
+    return confirmed
+      ? { status: "submitted", submissionState: "submitted", conversationId: input.conversationId, url }
+      : { status: "pending", submissionState: "unknown", retryable: false, canResume: true };
+  } catch {
+    return { status: "pending", submissionState: "unknown", retryable: false, canResume: true };
+  }
 }
 
 async function collect(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>) {
@@ -268,7 +294,8 @@ export const chatgptAdapter: HarnessAdapter = {
       for (const project of projects) results.push(await cleanupOne(session, project, apply));
       return { apply, results };
     }
-    if (action === "trigger") return trigger(session, cfg, args);
+    if (action === "trigger") return trigger(session, cfg, args, context.beforeSend);
+    if (action === "resume") return resumeSend(session, args);
     if (action === "collect") return collect(session, cfg, args);
     throw new Error(`Unsupported chatgpt action: ${action}`);
   },

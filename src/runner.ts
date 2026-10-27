@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { normalizeHarnessConfig } from "./core/config.js";
 import { bootstrapClose, bootstrapOpen } from "./core/bootstrap.js";
@@ -9,6 +10,7 @@ import { defaultHarnessHome, listProfiles, loadConfig, profilePaths, saveConfig 
 import { nextSupervisorDecision } from "./core/supervisor.js";
 import { ambiguousTriggerBlocked, nextAmbiguousTrigger, triggerMayHaveDispatched } from "./core/trigger-guard.js";
 import { executeRunLifecycle } from "./core/run-lifecycle.js";
+import { activeSendAttemptId, beginSendAttempt, finishSendAttempt, loadSendAttempt, sendAttemptMatchesProfile } from "./core/send-attempt.js";
 import { executeExecutionScript } from "./core/execution-script-runtime.js";
 import { reconcileRuntimeState } from "./core/runtime-status.js";
 import { buildHarnessOverviewEntry } from "./core/overview.js";
@@ -28,23 +30,83 @@ async function runProfile(name: string, action?: string, args: Record<string, un
   const config = await loadConfig(home, name);
   const actualAction = action || config.defaultAction;
   const state = await readState(name);
+  const browserBinding = createHash("sha256").update(JSON.stringify(config.browser)).digest("hex");
   const acknowledged = args.acknowledgeAmbiguous === true;
+  // An original possible Send remains locked even after a runner crash, before
+  // the normal adapter result can set its in-memory ambiguity guard.
+  if (actualAction === "trigger" && config.adapter === "chatgpt") {
+    const unresolvedId = state.pendingAttemptId ?? await activeSendAttemptId(home, name);
+    if (unresolvedId) {
+    const previous = await loadSendAttempt(home, name, unresolvedId);
+    if (previous.status === "unknown") return {
+      status: "blocked", reason: "UNRECONCILED_AMBIGUOUS_TRIGGER", provider: config.adapter,
+      attemptId: previous.id,
+    };
+    }
+  }
   if (ambiguousTriggerBlocked(state, config.adapter, actualAction, acknowledged)) return {status:"blocked",reason:"UNRECONCILED_AMBIGUOUS_TRIGGER",provider:config.adapter};
   if (!force && actualAction === "trigger") {
     const decision = nextSupervisorDecision({ nowMs: Date.now(), lastTriggerAtMs: state.lastTriggerAtMs, leaseMs: config.runPolicy.leaseMinutes * 60000 });
     if (decision.kind === "busy") return { status: "busy", retryAfterMs: decision.retryAfterMs };
   }
 
+  let attemptId: string | null = null;
   const result = await executeRunLifecycle({
     markRunning: () => writeState(name, { status: "RUNNING", action: actualAction, lastError: null }),
     open: () => openBrowserSession(config, home),
-    execute: (session) => registry.execute(config.adapter, actualAction, args, { profileName: name, browser: session, config }),
+    execute: async (session) => {
+      if (actualAction === "resume") {
+        if (config.adapter !== "chatgpt") throw new Error("Send Resume is supported only for ChatGPT existing conversations");
+        const id = args.attemptId ?? (await readState(name)).pendingAttemptId ?? await activeSendAttemptId(home, name);
+        if (typeof id !== "string") throw new Error("No original Send attempt ID to Resume");
+        const original = await loadSendAttempt(home, name, id);
+        const cfg = config.adapterConfig as { conversation?: { newChatEachRun?: boolean; conversationId?: string } };
+        if (cfg.conversation?.newChatEachRun !== false
+          || !sendAttemptMatchesProfile(original, browserBinding, cfg.conversation.conversationId ?? null))
+          throw new Error("Resume original Browser Profile or Conversation no longer matches; Send remains locked");
+        if (original.status === "submitted") {
+          await finishSendAttempt(home, name, id, "submitted");
+          return {
+          status: "submitted", submissionState: "submitted", attemptId: id,
+          conversationId: original.conversationId, url: `https://chatgpt.com/c/${original.conversationId}`,
+        };
+        }
+        const value = await registry.execute("chatgpt", "resume", {
+          prompt: original.prompt, conversationId: original.conversationId, baseline: original.baseline,
+        }, { profileName: name, browser: session, config }) as { status: string };
+        if (value.status === "submitted") await finishSendAttempt(home, name, id, "submitted");
+        return { ...value, attemptId: id };
+      }
+      const value = await registry.execute(config.adapter, actualAction, args, {
+        profileName: name, browser: session, config,
+        beforeSend: actualAction === "trigger" && config.adapter === "chatgpt"
+          ? async (prompt, input) => {
+            // Issue #30 targets a known saved conversation. New-chat/no-ID recovery
+            // is unsupported: do not invent a destination or mistake local IDs for saved.
+            if (!input.conversationId) return;
+            const original = await beginSendAttempt(home, name, {
+              prompt, conversationId: input.conversationId, baseline: input.baseline, browserBinding,
+            });
+            attemptId = original.id;
+            await writeState(name, { pendingAttemptId: attemptId });
+          } : undefined,
+      }) as { status?: string };
+      if (attemptId && value.status === "triggered") await finishSendAttempt(home, name, attemptId, "submitted");
+      return attemptId ? { ...value, attemptId } : value;
+    },
     markSuccess: async (value) => {
       const updates: Record<string, unknown> = { status: "IDLE", lastAction: actualAction, lastResult: value, lastRunAt: Date.now() };
       if (triggerMayHaveDispatched(actualAction, value)) updates.lastTriggerAtMs = Date.now();
+      if (actualAction === "resume" && value && typeof value === "object"
+        && (value as { status?: string }).status === "submitted") {
+        updates.pendingAttemptId = null;
+        updates.ambiguousTrigger = false;
+      }
+      if (actualAction === "trigger" && value && typeof value === "object"
+        && (value as { status?: string }).status === "triggered" && attemptId) updates.pendingAttemptId = null;
       // Receipt semantics are independent of the concrete HarnessAdapter id.
       // Preserve the legacy ChatGPT state shape unless an ambiguity flag was observed.
-      if (state.ambiguousTrigger !== undefined || (value && typeof value === "object" && (value as { status?: string }).status === "ambiguous")) {
+      if (actualAction !== "resume" && (state.ambiguousTrigger !== undefined || (value && typeof value === "object" && (value as { status?: string }).status === "ambiguous"))) {
         updates.ambiguousTrigger = nextAmbiguousTrigger(state.ambiguousTrigger === true, actualAction, value, acknowledged);
       }
       await writeState(name, updates);

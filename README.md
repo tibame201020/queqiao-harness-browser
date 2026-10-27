@@ -206,6 +206,33 @@ fields include message excerpts or raw DOM. Also includes fixed `promptIntegrity
 DOM text, cookies or credentials. Actual truncation and unsupported mixed DOM
 layouts fail closed before a real click; harmless paragraph line-break
 normalization is accepted only when the entire reconstructed input matches.
+**Issue #30 Resume-first (ChatGPT existing saved Conversation):** before the single actual
+Send click, Harness persists an original private Send Attempt with a UUID,
+complete exact source, preceding User Turn counts, saved Conversation ID and
+a Browser Profile binding under the owner's local Harness profile
+(`send-attempts/<attemptId>.json`, owner-only permissions; never commit this
+file or return the source in tools/logs). A failed/uncertain Send returns
+`ambiguous/submissionState=unknown` with its `attemptId`; the next Trigger
+stays blocked even after a Runner restart. Call
+`harness_run({name,action:"resume",args:{attemptId}})` to **reopen the original
+saved Conversation and verify the exact original newly attributable User Turn
+read-only, without typing or clicking Send**. Resume returns `submitted`
+(only on complete matching ownership and settled editor) or
+`pending/submissionState=unknown` (no proof yet). Resume is idempotent;
+on verified success Harness clears only that attempt's ambiguity lock.
+Repeat Resume later if the User Turn has not hydrated. The existing `collect`
+action then independently handles the Assistant response; it does not
+need to run inside the Send confirmation window.
+This version deliberately supports **only existing saved conversations**.
+An original new-chat Send without a validated saved ID cannot be safely
+resolved by guessing a provisional URL; it stays unknown. Reconfigured
+Browser Profiles or Conversation IDs also cannot confirm older attempts.
+The original plaintext source is held only while the private Attempt remains
+`unknown`. A verified `submitted` transition atomically **scrubs the original
+source text** from the receipt. Unresolved evidence is retained for explicit
+owner review and is never auto-deleted or published. Never store that
+receipt in GitHub, CI artifacts or public logs.
+
 Any ambiguous dispatch requires external reconciliation before another trigger. Use an authenticated browser profile for real UI smoke tests;
 do not commit profiles, cookies, conversation IDs or live receipts.
 ChatGPT actions:
@@ -257,7 +284,7 @@ The `harness_execute` compiler assigns one independent `script-<provider>-defaul
 
 `harness_run` / `harness_execute` retain their existing outer transport envelope (`status: \"ok\"`, `action`, `result`): upstream MUST inspect `result.status`, not mistake transport success for Provider success.
 
-A `trigger` result is `{status:"triggered",provider,conversationId,conversationUrl,connectorVerification}` only when the provider's conversation URL is independently observed following a single submit. After a potentially dispatched click fails or its identity cannot be confirmed, the result is `{status:"ambiguous",reason:"SEND_OUTCOME_UNKNOWN"|"CONVERSATION_ID_NOT_CONFIRMED",retryable:false}`: **never automatically retry or replay that prompt**. The per-profile state persists an `ambiguousTrigger` guard across later status/collect calls. Another `trigger` returns `blocked/UNRECONCILED_AMBIGUOUS_TRIGGER` even with `force`; only an explicit low-level `harness_run` trigger with `args.acknowledgeAmbiguous=true` after external reconciliation unlocks it. `harness_execute` does not expose that acknowledgement. A pre-send navigation/login/composer/connector failure is `unavailable` with a machine-readable `reason`. A temporary site load failure is `unavailable` with `retryable:true`, and is not a completed answer.
+A `trigger` result is `{status:"triggered",provider,conversationId,conversationUrl,connectorVerification}` only when the provider's conversation URL is independently observed following a single submit. After a potentially dispatched click fails or its identity cannot be confirmed, the result is `{status:"ambiguous",reason:"SEND_OUTCOME_UNKNOWN"|"CONVERSATION_ID_NOT_CONFIRMED",retryable:false}`: **never automatically retry or replay that prompt**. The per-profile state persists an `ambiguousTrigger` guard across later status/collect calls. Another `trigger` returns `blocked/UNRECONCILED_AMBIGUOUS_TRIGGER` even with `force`; legacy attempts without a durable Send receipt require explicit external reconciliation before using `args.acknowledgeAmbiguous=true`. For an Issue #30 receipt with a pending `attemptId`, **even `force=true` plus `acknowledgeAmbiguous=true` cannot bypass the Send lock**. Use the read-only `action:"resume"` first; only proven original delivery clears that lock. `harness_execute` does not expose that acknowledgement. A pre-send navigation/login/composer/connector failure is `unavailable` with a machine-readable `reason`. A temporary site load failure is `unavailable` with `retryable:true`, and is not a completed answer.
 
 Pass the exact returned `conversationId` and `conversationUrl` to `harness_run({name,action:"collect",args:{conversationId,conversationUrl,timeoutMs:60000,settleMs:3000}})`. The `collect` action rejects any foreign host, ID mismatch, query/fragment or unsupported provider route; it never guesses a different conversation. Results are `completed` with `text` after a stable quiet interval; `generating` or `pending` with `partialText` on a bounded timeout; or `unavailable` with the failure reason. A site UI error never becomes `completed`. A real Cloudflare verification page returns `unavailable/SITE_CHALLENGE` (manual profile intervention required); the adapter never tries to bypass it. The upper layer must check the returned file marker and other task-specific evidence itself. `collect` is read-only with respect to the child conversation and must not trigger again.
 

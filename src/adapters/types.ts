@@ -2,6 +2,10 @@ export type AdapterExecutionContext = {
   profileName?: string;
   browser?: unknown;
   config?: unknown;
+  beforeSend?: (prompt: string, input: {
+    conversationId: string | null;
+    baseline: { bubbles: number; legacy: number };
+  }) => Promise<void>;
 };
 
 export interface HarnessAdapter {
