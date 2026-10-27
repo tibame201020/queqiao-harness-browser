@@ -165,6 +165,11 @@ The ChatGPT trigger receipt retains backward-compatible `triggered` / `unavailab
 / `ambiguous` statuses and exposes explicit `submissionState` values:
 `submitted` / `not_sent` / `unknown`, respectively. This is Browser transport
 proof, never proof of native operations or task correctness.
+For first-Send new chats, the expected `/` to `/c/{id}` navigation is recognized
+**only after Send**, with exact attributable User Turn, complete source proof and empty
+composer. A late verified Turn may receive at most 1,500ms bounded grace to
+complete its 600ms settlement dwell; absent/wrong/unrelated turns cannot extend
+the deadline and remain ambiguous/non-retryable (Issue #28).
 Current ChatGPT user bubbles use `[data-user-message-bubble="true"]`; the older
 `[data-message-author-role="user"]` remains a fallback. Count one DOM family at a time
 to avoid treating nested wrappers as multiple submitted turns.

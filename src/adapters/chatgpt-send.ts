@@ -11,6 +11,8 @@ const LEGACY_USER_TURNS = '[data-message-author-role="user"]';
 const POST_CLICK_MAX_MS = 5_000;
 const POST_CLICK_MIN_MS = 3_000;
 const POST_CLICK_STABLE_MS = 600;
+// Permit a bounded dwell extension ONLY after an attributable User Turn and empty editor are verified.
+const POST_CLICK_PROVEN_GRACE_MS = 1_500;
 const GENERATION = [
   '[data-testid="stop-button"]',
   'button[aria-label="Stop generating"]',
@@ -246,6 +248,8 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     const targetValid = expectedId
       ? currentId === expectedId && initialId === expectedId
       : currentId !== null && (initialId === null || currentId === initialId);
+    // New-chat / -> /c/{id} is the expected first-Send navigation. Pre-click remains strict.
+    snapshot.state.sameTarget = targetValid;
     // Current ChatGPT renders a user bubble without the former author-role attribute.
     // Select one family, never count nested old/new wrappers as two User Turns.
     const bubbles = page.locator(USER_BUBBLES);
@@ -322,7 +326,12 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     } else {
       stableSince = null;
     }
-    if (now - clickedAt >= POST_CLICK_MAX_MS) throw diagnostic("DISPATCH_AMBIGUOUS", snapshot.state);
+    // A confirmed User Turn may first render just before the 5s window ends.
+    // Allow ONLY that already verified state to complete its 600ms stability dwell.
+    // Never extend for an absent/mismatched turn, wrong target or nonempty composer.
+    const provedBeforeDeadline = stableSince !== null && stableSince - clickedAt <= POST_CLICK_MAX_MS;
+    const deadline = POST_CLICK_MAX_MS + (provedBeforeDeadline ? POST_CLICK_PROVEN_GRACE_MS : 0);
+    if (now - clickedAt >= deadline) throw diagnostic("DISPATCH_AMBIGUOUS", snapshot.state);
     await page.waitForTimeout(200);
   }
 }
