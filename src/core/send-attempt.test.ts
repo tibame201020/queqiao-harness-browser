@@ -27,6 +27,7 @@ describe("private original Send attempt recovery (#30)", () => {
     await finishSendAttempt(h, "unit", a.id, "submitted");
     const b = await finishSendAttempt(h, "unit", a.id, "submitted");
     expect(b.status).toBe("submitted");
+    expect((await loadSendAttempt(h, "unit", a.id)).prompt).toBe("");
     await expect(loadSendAttempt(h, "other", a.id)).rejects.toThrow();
     await expect(loadSendAttempt(h, "unit", "../escape")).rejects.toThrow();
   });

@@ -52,9 +52,11 @@ For a ChatGPT Profile resuming an *existing canonical saved Conversation*:
    The normal first-new-chat Trigger path remains unchanged.
 
 The full original source is stored only under the runtime's *private*
-profile directory for exact Markdown validation, not Git or MCP output.
-The record uses owner-only file permissions on supported OSes and is not
-automatically deleted (manual retention review needed for sensitive prompts).
+profile directory **while the attempt remains unresolved**, for exact Markdown
+validation, never Git or MCP output. After a verified `submitted` transition
+the original source is atomically scrubbed from the receipt, preserving only
+identity, baseline and status metadata for idempotent Resume. Unresolved
+unknown attempts remain owner-only and require explicit retention review.
 No cookies, OAuth tokens, profile passwords, external user IDs or raw DOM
 are copied into this repository.
 

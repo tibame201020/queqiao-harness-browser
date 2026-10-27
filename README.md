@@ -227,9 +227,10 @@ This version deliberately supports **only existing saved conversations**.
 An original new-chat Send without a validated saved ID cannot be safely
 resolved by guessing a provisional URL; it stays unknown. Reconfigured
 Browser Profiles or Conversation IDs also cannot confirm older attempts.
-The original plaintext source remains exclusively in the private local
-runtime receipt until explicitly removed by the profile owner; there is no
-automatic retention deletion of unresolved evidence. Never store that
+The original plaintext source is held only while the private Attempt remains
+`unknown`. A verified `submitted` transition atomically **scrubs the original
+source text** from the receipt. Unresolved evidence is retained for explicit
+owner review and is never auto-deleted or published. Never store that
 receipt in GitHub, CI artifacts or public logs.
 
 Any ambiguous dispatch requires external reconciliation before another trigger. Use an authenticated browser profile for real UI smoke tests;

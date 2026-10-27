@@ -25,7 +25,7 @@ function paths(home: string, profile: string, id: string) {
 export async function loadSendAttempt(home: string, profile: string, id: string): Promise<SendAttempt> {
   const data = JSON.parse(await fs.readFile(paths(home, profile, id).file, "utf8")) as SendAttempt;
   if (data.id !== id || !validUuid.test(data.conversationId) || !/^[0-9a-f]{64}$/.test(data.browserBinding) || !["unknown", "submitted"].includes(data.status)
-    || typeof data.prompt !== "string" || !data.prompt
+    || typeof data.prompt !== "string" || (data.status === "unknown" && !data.prompt)
     || !Number.isInteger(data.baseline?.bubbles) || !Number.isInteger(data.baseline?.legacy)
     || data.baseline.bubbles < 0 || data.baseline.legacy < 0) throw new Error("Invalid private Send attempt");
   return data;
@@ -66,9 +66,9 @@ export async function finishSendAttempt(home: string, profile: string, id: strin
     const owner = await fs.readFile(active, "utf8").catch(() => null);
     if (owner === id) await fs.rm(active, { force: true });
   };
-  if (record.status === status) { await releaseActive(); return record; }
+  if (record.status === status && !record.prompt) { await releaseActive(); return record; }
   const tmp = file + "." + randomUUID() + ".tmp";
-  const updated = { ...record, status };
+  const updated = { ...record, status, prompt: "" }; // scrub source atomically after exact confirmation
   await fs.writeFile(tmp, JSON.stringify(updated), { flag: "wx", mode: 0o600 });
   try { await fs.rename(tmp, file); } catch (e) { await fs.rm(tmp, { force: true }); throw e; }
   await releaseActive();
