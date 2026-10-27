@@ -220,7 +220,12 @@ read-only, without typing or clicking Send**. Resume returns `submitted`
 (only on complete matching ownership and settled editor) or
 `pending/submissionState=unknown` (no proof yet). Resume is idempotent;
 on verified success Harness clears only that attempt's ambiguity lock.
-Repeat Resume later if the User Turn has not hydrated. The existing `collect`
+Repeat Resume later only when the saved Conversation loaded normally but the
+User Turn has not hydrated. An HTTP error, navigation failure or recognized
+security challenge returns `unavailable/submissionState=unknown` with a fixed
+nonsecret reason, `retryable:false` and `canResume:false`: stop automatic polling,
+keep the original Attempt locked, and resume only after page access is restored.
+The existing `collect`
 action then independently handles the Assistant response; it does not
 need to run inside the Send confirmation window.
 This version deliberately supports **only existing saved conversations**.

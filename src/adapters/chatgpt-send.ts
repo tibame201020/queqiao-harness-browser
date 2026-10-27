@@ -1,4 +1,5 @@
 import type { Locator, Page } from "playwright-core";
+import { createHmac, randomBytes } from "node:crypto";
 import { conversationIdFromHref } from "./chatgpt.js";
 
 const COMPOSER = '#prompt-textarea:visible, [role="textbox"][contenteditable="true"]:visible';
@@ -33,6 +34,8 @@ type PostClickTurnEvidence = {
   checks: number;
   observedNewTurn: boolean;
   verifiedNewTurn: boolean;
+  sameCountLastMatchesOriginal: boolean;
+  sameCountLastChanged: boolean;
   samples: { bubbles: number; legacy: number; correctTarget: boolean; editorEmpty: boolean; generationActive: boolean }[];
 };
 
@@ -253,7 +256,8 @@ function expectedInlineCodePresentation(source: string): { rendered: string; cod
 }
 /** Keep the same Browser Session open until this particular submitted User Turn is visible and its editor settles. */
 async function awaitPostClickSettlement(page: Page, prompt: string, started: number, initialId: string | null,
-  expectedId: string | null, beforeUserTurns: { bubbles: number; legacy: number }): Promise<void> {
+  expectedId: string | null, beforeUserTurns: { bubbles: number; legacy: number },
+  onEvidence?: (value: PostClickTurnEvidence) => void): Promise<void> {
   const clickedAt = Date.now();
   const evidence: PostClickTurnEvidence = {
     before: { ...beforeUserTurns },
@@ -263,9 +267,13 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     checks: 0,
     observedNewTurn: false,
     verifiedNewTurn: false,
+    sameCountLastMatchesOriginal: false,
+    sameCountLastChanged: false,
     samples: [],
   };
   let stableSince: number | null = null;
+  const fingerprintKey = onEvidence ? randomBytes(32) : null;
+  let lastSeenFingerprint: string | null = null;
   let expansionAttempted = false;
   let ownedProvisionalUrl: string | null = null;
   while (true) {
@@ -287,6 +295,21 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     const legacyCount = await page.locator(LEGACY_USER_TURNS).count().catch(() => -1);
     const turnCount = useBubbles ? bubbleCount : legacyCount;
     const priorCount = useBubbles ? beforeUserTurns.bubbles : beforeUserTurns.legacy;
+    // Count-preserving churn is evidence of ambiguity, never submission proof.
+    // Fingerprints use an ephemeral private HMAC key and never enter receipts.
+    if (fingerprintKey && targetValid && priorCount > 0 && turnCount === priorCount && evidence.checks % 4 === 0) {
+      const last = turns.nth(turnCount - 1);
+      const contents = last.locator(".whitespace-pre-wrap");
+      const count = await contents.count().catch(() => -1);
+      const message = count === 1 ? contents.first() : count === 0 ? last : null;
+      const shown = message ? await message.innerText({ timeout: 500 }).catch(() => null) : null;
+      if (typeof shown === "string") {
+        evidence.sameCountLastMatchesOriginal ||= sameSubmittedText(shown, prompt);
+        const fingerprint = createHmac("sha256", fingerprintKey).update(shown).digest("hex");
+        evidence.sameCountLastChanged ||= lastSeenFingerprint !== null && lastSeenFingerprint !== fingerprint;
+        lastSeenFingerprint = fingerprint;
+      }
+    }
     let newTurnMatches = false;
     let reason: Readiness["postClickReason"] = targetValid ? "new_turn_absent" : "target_unconfirmed";
     if ((targetValid || provisionalFirstChat) && turnCount === priorCount + 1 && priorCount >= 0) {
@@ -365,6 +388,7 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       min: { ...evidence.min }, max: { ...evidence.max },
       samples: evidence.samples.map(item => ({ ...item })),
     };
+    onEvidence?.(snapshot.state.turnEvidence!);
     // Provisional local-chatgpt IDs are NOT saved Conversation IDs and never confirm Send.
     snapshot.state.submissionConfirmed = targetValid && newTurnMatches;
     snapshot.state.composerSettled = editorEmpty;
@@ -395,11 +419,12 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
 }
 
 export async function reconcileChatGptSend(page: Page, prompt: string, expectedId: string,
-  baseline: { bubbles: number; legacy: number }): Promise<boolean> {
+  baseline: { bubbles: number; legacy: number },
+  onEvidence?: (value: PostClickTurnEvidence) => void): Promise<boolean> {
   // Read-only re-observation of the *original* Send. No composing, click or new dispatch.
   if (safeUrl(page).id !== expectedId) return false;
   try {
-    await awaitPostClickSettlement(page, prompt, Date.now(), expectedId, expectedId, baseline);
+    await awaitPostClickSettlement(page, prompt, Date.now(), expectedId, expectedId, baseline, onEvidence);
     return true;
   } catch {
     return false; // Unknown remains locked. A caller may repeat this read-only action later.
