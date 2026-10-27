@@ -3,11 +3,11 @@ import { chatgptAdapter } from "./chatgpt-adapter.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean; renderedInline?: boolean; inlineMutate?: boolean; inlineDomMissing?: boolean; inlineCodeMutate?: boolean } = {}) {
+function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean; renderedInline?: boolean; inlineMutate?: boolean; inlineDomMissing?: boolean; inlineCodeMutate?: boolean; wrongOrigin?: boolean; wrongResumeId?: boolean; pendingFirstChat?: boolean; saveAtPoll?: number; initialDraft?: string; onWait?: (ms: number) => void } = {}) {
   let logicalNow = 0;
   vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   const calls: string[] = [];
-  let editorText = "";
+  let editorText = opts.initialDraft ?? "";
   let url = "https://chatgpt.com/";
   let userTurns = opts.resume ? 1 : 0;
   let lastUserText = "existing synthetic earlier turn";
@@ -58,7 +58,9 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     click: vi.fn(async (args?: { trial?: boolean }) => {
       if (!args?.trial) {
         calls.push("send");
-        if (!opts.resume) url = `https://chatgpt.com/c/${ID}`;
+        if (!opts.resume) url = opts.wrongOrigin ? `https://invalid.example/c/${ID}` : opts.pendingFirstChat
+          ? `https://chatgpt.com/c/local-chatgpt%3A${ID}` : `https://chatgpt.com/c/${ID}`;
+        else if (opts.wrongResumeId) url = "https://chatgpt.com/c/22222222-2222-4222-8222-222222222222";
         if (!opts.postClickStuck) {
           if (opts.postClickSettleAfter !== undefined) pendingUserText = editorText;
           else completeUserTurn(editorText);
@@ -95,8 +97,12 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
       throw new Error("Unexpected selector " + selector);
     }),
     keyboard: { insertText: vi.fn(async (value: string) => { calls.push("typing"); editorText += value; }) },
-    waitForTimeout: vi.fn(async () => {
+    waitForTimeout: vi.fn(async (duration: number) => {
+      opts.onWait?.(duration);
       polls++;
+      if (opts.pendingFirstChat && opts.saveAtPoll !== undefined && polls >= opts.saveAtPoll) {
+        url = `https://chatgpt.com/c/${ID}`;
+      }
       if (pendingUserText !== null && polls >= (opts.postClickSettleAfter ?? 0)) {
         completeUserTurn(pendingUserText);
         pendingUserText = null;
@@ -358,6 +364,95 @@ describe("ChatGPT composer compatibility", () => {
     });
     expect(uncertain).toMatchObject({ status: "ambiguous", submissionState: "unknown", retryable: false });
     expect(unknown.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it("confirms a first-new-chat Send when its sole matching User Turn settles near the timeout (#28 RED)", async () => {
+    let clock = 0;
+    const f = fixture({ siteBubble: true, postClickSettleAfter: 23, onWait: ms => { clock += ms; } });
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const result = await chatgptAdapter.execute("trigger", { prompt: "SYNTHETIC_FIRST_SEND_SETTLED_NEAR_TIMEOUT" }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(result).toMatchObject({ status: "triggered", submissionState: "submitted", conversationId: ID });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it("waits for a verified local first-chat draft to become a saved Conversation before confirming (#28 RED)", async () => {
+    let clock = 0;
+    const f = fixture({ siteBubble: true, pendingFirstChat: true, saveAtPoll: 34,
+      onWait: ms => { clock += ms; } });
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const result = await chatgptAdapter.execute("trigger", { prompt: "SYNTHETIC_PROVISIONAL_URL_BEFORE_PERSISTENCE" }, {
+      browser: { page: f.page }, config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(result).toMatchObject({ status: "triggered", submissionState: "submitted", conversationId: ID });
+    expect(clock).toBeGreaterThanOrEqual(6_600);
+    expect(clock).toBeLessThanOrEqual(12_200);
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it.each([
+    { pendingFirstChat: true, saveAtPoll: undefined },
+    { pendingFirstChat: true, saveAtPoll: 34, postedDifferentText: true },
+    { pendingFirstChat: true, saveAtPoll: 34, concurrentNewTurn: true },
+    { pendingFirstChat: true, saveAtPoll: 34, composerStuck: true },
+  ])("never promotes an unproven provisional local-chat URL to submitted (#28)", async flags => {
+    let clock = 0;
+    const f = fixture({ siteBubble: true, onWait: ms => { clock += ms; }, ...flags });
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const result = await chatgptAdapter.execute("trigger", { prompt: "SYNTHETIC_PROVISIONAL_DO_NOT_TRUST_URL" }, {
+      browser: { page: f.page }, config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(result).toMatchObject({ status: "ambiguous", submissionState: "unknown", retryable: false });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    expect(clock).toBeLessThanOrEqual(12_200);
+  });
+
+  it.each([
+    { wrongOrigin: true },
+    { postClickStuck: true },
+    { postedDifferentText: true },
+    { concurrentNewTurn: true },
+    { composerStuck: true },
+  ])("fails closed when a first new-chat turn is not provably owned during the bounded grace (#28)", async flags => {
+    let clock = 0;
+    const f = fixture({ siteBubble: true, postClickSettleAfter: 23, onWait: ms => { clock += ms; }, ...flags });
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const prompt = "SYNTHETIC_FIRST_SEND_EXACT_OWNERSHIP_REQUIRED";
+    const result = await chatgptAdapter.execute("trigger", { prompt }, {
+      browser: { page: f.page }, config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(result).toMatchObject({ status: "ambiguous", submissionState: "unknown", retryable: false });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    expect(clock).toBeLessThanOrEqual(5_200);
+    expect(JSON.stringify(result)).not.toContain(prompt);
+  });
+
+  it("does not grant first-chat navigation grace for a wrong resumed Conversation ID (#28)", async () => {
+    let clock = 0;
+    const f = fixture({ resume: true, siteBubble: true, wrongResumeId: true,
+      postClickSettleAfter: 23, onWait: ms => { clock += ms; } });
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const result = await chatgptAdapter.execute("trigger", { prompt: "SYNTHETIC_WRONG_RESUME_ID" }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: false, conversationId: ID } } },
+    });
+    expect(result).toMatchObject({ status: "ambiguous", submissionState: "unknown", retryable: false,
+      diagnostic: { sameTarget: false } });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it("refuses an unrelated draft without clicking Send (#28)", async () => {
+    const f = fixture({ initialDraft: "UNRELATED_ALREADY_TYPED_CONTENT" });
+    const result = await chatgptAdapter.execute("trigger", { prompt: "SYNTHETIC_NO_DRAFT_OVERWRITE" }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(result).toMatchObject({ status: "unavailable", submissionState: "not_sent", retryable: true,
+      diagnostic: { precomposeReason: "draft_present" } });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(0);
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
   });
 
   it("does not treat new-chat URL navigation alone as confirmed submission (#20)", async () => {

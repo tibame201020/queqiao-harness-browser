@@ -11,6 +11,10 @@ const LEGACY_USER_TURNS = '[data-message-author-role="user"]';
 const POST_CLICK_MAX_MS = 5_000;
 const POST_CLICK_MIN_MS = 3_000;
 const POST_CLICK_STABLE_MS = 600;
+// Permit a bounded dwell extension ONLY after an attributable User Turn and empty editor are verified.
+const POST_CLICK_PROVEN_GRACE_MS = 1_500;
+// Only an owned provisional first-chat User Turn may extend observation until ChatGPT saves a canonical ID.
+const POST_CLICK_PENDING_SAVE_MAX_MS = 12_000;
 const GENERATION = [
   '[data-testid="stop-button"]',
   'button[aria-label="Stop generating"]',
@@ -240,12 +244,17 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
   const clickedAt = Date.now();
   let stableSince: number | null = null;
   let expansionAttempted = false;
+  let ownedProvisionalUrl: string | null = null;
   while (true) {
     const snapshot = await inspect(page, "postclick", started, initialId, expectedId);
     const currentId = safeUrl(page).id;
     const targetValid = expectedId
       ? currentId === expectedId && initialId === expectedId
       : currentId !== null && (initialId === null || currentId === initialId);
+    // New-chat / -> /c/{id} is the expected first-Send navigation. Pre-click remains strict.
+    snapshot.state.sameTarget = targetValid;
+    const provisionalFirstChat = initialId === null && expectedId === null
+      && /^https:\/\/chatgpt\.com\/c\/local-chatgpt%3A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(snapshot.state.url);
     // Current ChatGPT renders a user bubble without the former author-role attribute.
     // Select one family, never count nested old/new wrappers as two User Turns.
     const bubbles = page.locator(USER_BUBBLES);
@@ -256,7 +265,7 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     const priorCount = useBubbles ? beforeUserTurns.bubbles : beforeUserTurns.legacy;
     let newTurnMatches = false;
     let reason: Readiness["postClickReason"] = targetValid ? "new_turn_absent" : "target_unconfirmed";
-    if (targetValid && turnCount === priorCount + 1 && priorCount >= 0) {
+    if ((targetValid || provisionalFirstChat) && turnCount === priorCount + 1 && priorCount >= 0) {
       const turn = turns.nth(turnCount - 1);
       // Prefer the actual bubble content, excluding copy/edit buttons owned by the outer turn.
       const contents = turn.locator(".whitespace-pre-wrap");
@@ -310,11 +319,15 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       editorEmpty = typeof rendered === "string" && typeof raw === "string"
         && !rendered.trim() && !raw.trim();
     }
-    snapshot.state.submissionConfirmed = newTurnMatches;
+    // Provisional local-chatgpt IDs are NOT saved Conversation IDs and never confirm Send.
+    snapshot.state.submissionConfirmed = targetValid && newTurnMatches;
     snapshot.state.composerSettled = editorEmpty;
     snapshot.state.postClickReason = !targetValid ? "target_unconfirmed"
       : newTurnMatches ? editorEmpty ? "stabilizing" : "composer_not_settled" : reason;
     const now = Date.now();
+    if (provisionalFirstChat && newTurnMatches && editorEmpty) {
+      ownedProvisionalUrl ??= snapshot.state.url;
+    }
     if (targetValid && newTurnMatches && editorEmpty) {
       stableSince ??= now;
       // A brief minimum dwell lets the site's optimistic UI settle before managed Chrome closes.
@@ -322,7 +335,15 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     } else {
       stableSince = null;
     }
-    if (now - clickedAt >= POST_CLICK_MAX_MS) throw diagnostic("DISPATCH_AMBIGUOUS", snapshot.state);
+    // A confirmed User Turn may first render just before the 5s window ends.
+    // Allow ONLY that already verified state to complete its 600ms stability dwell.
+    // Never extend for an absent/mismatched turn, wrong target or nonempty composer.
+    const provedBeforeDeadline = stableSince !== null && stableSince - clickedAt <= POST_CLICK_MAX_MS;
+    const waitingForFirstSave = ownedProvisionalUrl !== null && (targetValid
+      || (provisionalFirstChat && snapshot.state.url === ownedProvisionalUrl));
+    const deadline = waitingForFirstSave ? POST_CLICK_PENDING_SAVE_MAX_MS
+      : POST_CLICK_MAX_MS + (provedBeforeDeadline ? POST_CLICK_PROVEN_GRACE_MS : 0);
+    if (now - clickedAt >= deadline) throw diagnostic("DISPATCH_AMBIGUOUS", snapshot.state);
     await page.waitForTimeout(200);
   }
 }
