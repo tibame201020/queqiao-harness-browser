@@ -3,7 +3,7 @@ import { chatgptAdapter } from "./chatgpt-adapter.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean } = {}) {
+function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean; renderedInline?: boolean; inlineMutate?: boolean; inlineDomMissing?: boolean; inlineCodeMutate?: boolean } = {}) {
   let logicalNow = 0;
   vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   const calls: string[] = [];
@@ -19,7 +19,10 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     if (!opts.composerStuck) editorText = "";
   };
   let expanded = false;
-  const shownText = () => opts.renderedFormatted && lastUserText.length > 700
+  const shownText = () => opts.renderedInline
+    ? (() => { const text = lastUserText.replace(/`([^`\r\n]+)`/g, "$1");
+      return opts.inlineMutate ? text.replace("END_INTACT", "END_MUTATED") : text; })()
+    : opts.renderedFormatted && lastUserText.length > 700
     ? (() => {
       const basic = lastUserText.slice(0, 380) + lastUserText.slice(392);
       const changedMiddle = opts.changedRenderedMiddle
@@ -29,8 +32,12 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     })()
     : opts.expandWrongText && expanded ? "mismatched synthetic content" :
     opts.collapseLong && !expanded ? (opts.foldedDifferent ? "… " : "") + lastUserText.slice(0, 10_240) : lastUserText;
-  const content = { innerText: vi.fn(async () => shownText()), locator: vi.fn(() => ({
-    count: vi.fn(async () => opts.renderedFormatted && !opts.noFormattedDOM ? 1 : 0),
+  const content = { innerText: vi.fn(async () => shownText()), locator: vi.fn((selector: string) => ({
+    count: vi.fn(async () => selector === "code:not(pre code)" && opts.renderedInline && !opts.inlineDomMissing
+      ? (lastUserText.match(/`([^`\r\n]+)`/g) || []).length
+      : selector === "pre code" && opts.renderedFormatted && !opts.noFormattedDOM ? 1 : 0),
+    allInnerTexts: vi.fn(async () => selector === "code:not(pre code)" && opts.renderedInline
+      ? (lastUserText.match(/`([^`\r\n]+)`/g) || []).map((t, i) => i === 2 && opts.inlineCodeMutate ? "MUTATED" : t.slice(1, -1)) : []),
   })) };
   const expand = {
     count: vi.fn(async () => opts.collapseLong && !expanded && !opts.noExpand ? 1 : 0),
@@ -39,7 +46,7 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
   const userMessage = {
     innerText: vi.fn(async () => shownText()), textContent: vi.fn(async () => shownText()),
     locator: vi.fn((selector: string) => selector === ".whitespace-pre-wrap"
-      ? { count: vi.fn(async () => (opts.collapseLong || opts.renderedFormatted) ? 1 : 0), first: vi.fn(() => content) }
+      ? { count: vi.fn(async () => (opts.collapseLong || opts.renderedFormatted || opts.renderedInline) ? 1 : 0), first: vi.fn(() => content) }
       : { count: vi.fn(async () => 0) }),
     getByRole: vi.fn(() => expand),
   };
@@ -297,6 +304,60 @@ describe("ChatGPT composer compatibility", () => {
     });
     expect(result).toMatchObject({ status: "ambiguous", retryable: false });
     expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it.each([false, true])("confirms an attributable inline-code continuation without raw-Markdown text equality (#24 resume=%s)", async resume => {
+    const f = fixture({ resume, siteBubble: true, renderedInline: true });
+    const prompt = "Synthetic verified skill-like return\\n\\n" + Array.from({ length: 54 }, (_, i) =>
+      "Key " + i + ": `synthetic_" + i + "` is verified by the caller.").join("\\n")
+      + "\\nEND_INTACT";
+    const result = await chatgptAdapter.execute("trigger", { prompt }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: !resume, conversationId: resume ? ID : undefined } } },
+    });
+    expect(result).toMatchObject({ status: "triggered", conversationId: ID });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain(prompt);
+  });
+
+  it.each([{ inlineMutate: true }, { inlineCodeMutate: true }, { inlineDomMissing: true }])(
+    "does not accept altered or unproven inline-code return content (#24)", async flags => {
+      const f = fixture({ siteBubble: true, renderedInline: true, ...flags });
+      let now = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+      const prompt = "Validated source " + Array.from({ length: 54 }, (_, i) =>
+        "Key " + i + ": `synthetic_" + i + "` must be intact.").join("\\n")
+        + "\\nEND_INTACT";
+      const result = await chatgptAdapter.execute("trigger", { prompt }, {
+        browser: { page: f.page },
+        config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+      });
+      expect(result).toMatchObject({ status: "ambiguous", reason: "SEND_OUTCOME_UNKNOWN", retryable: false });
+      expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+      expect(JSON.stringify(result)).not.toContain(prompt);
+    },
+  );
+
+  it("exposes not_sent before any click and unknown after an unproven click (#24 transport receipt)", async () => {
+    const noSend = fixture();
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => { now += 3000; return now; });
+    noSend.composer.count.mockResolvedValue(0);
+    // Pre-compose is definitively unavailable; zero clicks means not_sent.
+
+
+    const noSendReceipt = await chatgptAdapter.execute("trigger", { prompt: "synthetic no-send" }, {
+      browser: { page: noSend.page }, config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(noSendReceipt).toMatchObject({ status: "unavailable", submissionState: "not_sent" });
+    expect(noSend.calls.filter(x => x === "send")).toHaveLength(0);
+
+    const unknown = fixture({ postClickStuck: true });
+    const uncertain = await chatgptAdapter.execute("trigger", { prompt: "synthetic unknown-send" }, {
+      browser: { page: unknown.page }, config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(uncertain).toMatchObject({ status: "ambiguous", submissionState: "unknown", retryable: false });
+    expect(unknown.calls.filter(x => x === "send")).toHaveLength(1);
   });
 
   it("does not treat new-chat URL navigation alone as confirmed submission (#20)", async () => {

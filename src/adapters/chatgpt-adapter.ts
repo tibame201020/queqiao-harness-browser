@@ -167,14 +167,14 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
   } catch (error) {
     if (!(error instanceof ChatGptSendError)) throw error;
     return error.code === "DISPATCH_AMBIGUOUS"
-      ? { status: "ambiguous", reason: "SEND_OUTCOME_UNKNOWN", retryable: false, diagnostic: error.diagnostic }
-      : { status: "unavailable", reason: "PRE_SEND_NOT_READY", retryable: true, diagnostic: error.diagnostic };
+      ? { status: "ambiguous", submissionState: "unknown", reason: "SEND_OUTCOME_UNKNOWN", retryable: false, diagnostic: error.diagnostic }
+      : { status: "unavailable", submissionState: "not_sent", reason: "PRE_SEND_NOT_READY", retryable: true, diagnostic: error.diagnostic };
   }
 
   // Returning a structured ambiguous receipt lets the existing generic Runner persist its replay guard.
   const notConfirmed = async () => {
     const error = await postClickAmbiguity(page, started, cfg.conversation.conversationId ?? null);
-    return { status: "ambiguous", reason: "CONVERSATION_ID_NOT_CONFIRMED", retryable: false, diagnostic: error.diagnostic };
+    return { status: "ambiguous", submissionState: "unknown", reason: "CONVERSATION_ID_NOT_CONFIRMED", retryable: false, diagnostic: error.diagnostic };
   };
   try {
     if (cfg.conversation.newChatEachRun) {
@@ -187,7 +187,7 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
   const conversationId = conversationIdFromHref(transientUrl);
   if (!conversationId || (!cfg.conversation.newChatEachRun && conversationId !== cfg.conversation.conversationId)) return notConfirmed();
   const url = target.projectId ? projectConversationUrl(target.projectId, conversationId) : transientUrl;
-  return { status: "triggered", url, conversationId };
+  return { status: "triggered", submissionState: "submitted", url, conversationId };
 }
 
 async function collect(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>) {
