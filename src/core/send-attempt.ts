@@ -46,7 +46,10 @@ export async function beginSendAttempt(home: string, profile: string,
       throw new Error("Unresolved pending original Send must be reconciled, never resent");
     throw error;
   }
-  try { await lock.writeFile(id); } finally { await lock.close(); }
+  let writeError: unknown;
+  try { await lock.writeFile(id); } catch (error) { writeError = error; }
+  finally { await lock.close(); }
+  if (writeError !== undefined) { await fs.rm(active, { force: true }); throw writeError; }
   const data: SendAttempt = {
     id, status: "unknown", prompt: input.prompt, conversationId: input.conversationId, browserBinding: input.browserBinding,
     baseline: { ...input.baseline }, createdAt: new Date().toISOString(),
@@ -57,18 +60,36 @@ export async function beginSendAttempt(home: string, profile: string,
 }
 export async function finishSendAttempt(home: string, profile: string, id: string, status: "submitted"): Promise<SendAttempt> {
   const record = await loadSendAttempt(home, profile, id);
-  if (record.status === status) return record;
-  const file = paths(home, profile, id).file, tmp = file + "." + randomUUID() + ".tmp";
+  const { file, dir } = paths(home, profile, id);
+  const releaseActive = async () => {
+    const active = path.join(dir, "active.lock");
+    const owner = await fs.readFile(active, "utf8").catch(() => null);
+    if (owner === id) await fs.rm(active, { force: true });
+  };
+  if (record.status === status) { await releaseActive(); return record; }
+  const tmp = file + "." + randomUUID() + ".tmp";
   const updated = { ...record, status };
   await fs.writeFile(tmp, JSON.stringify(updated), { flag: "wx", mode: 0o600 });
   try { await fs.rename(tmp, file); } catch (e) { await fs.rm(tmp, { force: true }); throw e; }
-  const active = path.join(paths(home, profile, id).dir, "active.lock");
-  const owner = await fs.readFile(active, "utf8").catch(() => null);
-  if (owner === id) await fs.rm(active, { force: true });
+  await releaseActive();
   return updated;
 }
 
 export function sendAttemptMatchesProfile(attempt: SendAttempt, browserBinding: string, configuredConversationId: string | null): boolean {
   return attempt.browserBinding === browserBinding
     && attempt.conversationId === configuredConversationId;
+}
+
+// Recover a possibly-clicked Send after a runner crash between durable file
+// creation and writing the per-profile runtime-state pointer. No Send or clear.
+export async function activeSendAttemptId(home: string, profile: string): Promise<string | null> {
+  const dir = paths(home, profile, "00000000-0000-4000-8000-000000000000").dir;
+  const raw = await fs.readFile(path.join(dir, "active.lock"), "utf8").catch((e: NodeJS.ErrnoException) => {
+    if (e.code === "ENOENT") return null;
+    throw e;
+  });
+  if (raw === null) return null;
+  if (!validUuid.test(raw)) throw new Error("Invalid private active Send attempt identity");
+  await loadSendAttempt(home, profile, raw); // fail closed on a torn pre-click receipt
+  return raw;
 }

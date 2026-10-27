@@ -23,3 +23,11 @@
 - `npm audit --omit=dev --audit-level=moderate`: zero vulnerabilities.
 - Diagnostic compiled Runner was used only as a temporary Paperclip Host pin for this isolated test. Permanent Host should remain its original rc.3 configuration unless a separate fix passes independent native E2E.
 - [Open Issue #30](https://github.com/tibame201020/queqiao-harness-browser/issues/30) tracks this resumed-turn-specific failure. It must be fixed without relaxing wrong-conversation, stale/duplicate content, or single-send safety. The diagnostic-only PR is **not** proof of a fix.
+
+## Updated in the same PR after user architecture decision
+
+This original document describes the instrumentation-only stage of PR #31.
+Its diagnostic-only assessment has since been superseded by
+`ISSUE30_RESUME_FIRST_20261027.md`: a bounded Send check followed by
+durable private Attempt and **read-only `resume` / `collect`**.
+Paperclip Native lifecycle is not part of this generic Harness gate.

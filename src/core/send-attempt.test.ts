@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { beginSendAttempt, loadSendAttempt, finishSendAttempt, sendAttemptMatchesProfile } from "./send-attempt.js";
+import { beginSendAttempt, loadSendAttempt, finishSendAttempt, sendAttemptMatchesProfile, activeSendAttemptId } from "./send-attempt.js";
 
 const target = "11111111-1111-4111-8111-111111111111";
 const original = "SYNTHETIC_PRIVATE_ORIGINAL_RESUME_MESSAGE";
@@ -29,6 +29,34 @@ describe("private original Send attempt recovery (#30)", () => {
     expect(b.status).toBe("submitted");
     await expect(loadSendAttempt(h, "other", a.id)).rejects.toThrow();
     await expect(loadSendAttempt(h, "unit", "../escape")).rejects.toThrow();
+  });
+  it("recovers a submitted receipt whose active lock survived a process crash", async () => {
+    const h = await home(), a = await beginSendAttempt(h, "unit", {
+      prompt: original, conversationId: target, browserBinding: binding, baseline,
+    });
+    await finishSendAttempt(h, "unit", a.id, "submitted");
+    const lock = path.join(h, "profiles", "unit", "send-attempts", "active.lock");
+    await fs.writeFile(lock, a.id, { flag: "wx", mode: 0o600 }); // crash-after-rename fixture
+    expect((await finishSendAttempt(h, "unit", a.id, "submitted")).status).toBe("submitted");
+    await expect(fs.stat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("recovers the original attempt ID from the durable lock after a state-file crash", async () => {
+    const h = await home();
+    const attempt = await beginSendAttempt(h, "unit", {
+      prompt: original, conversationId: target, browserBinding: binding, baseline,
+    });
+    expect(await activeSendAttemptId(h, "unit")).toBe(attempt.id);
+    await finishSendAttempt(h, "unit", attempt.id, "submitted");
+    expect(await activeSendAttemptId(h, "unit")).toBeNull();
+  });
+  it("serializes concurrent trigger candidates using an exclusive filesystem lock", async () => {
+    const h = await home();
+    const results = await Promise.allSettled([
+      beginSendAttempt(h, "unit", { prompt: original, conversationId: target, browserBinding: binding, baseline }),
+      beginSendAttempt(h, "unit", { prompt: original, conversationId: target, browserBinding: binding, baseline }),
+    ]);
+    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(r => r.status === "rejected")).toHaveLength(1);
   });
   it("rejects pending duplicate attempts to prevent a second Send", async () => {
     const h = await home();

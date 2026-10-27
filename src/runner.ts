@@ -10,7 +10,7 @@ import { defaultHarnessHome, listProfiles, loadConfig, profilePaths, saveConfig 
 import { nextSupervisorDecision } from "./core/supervisor.js";
 import { ambiguousTriggerBlocked, nextAmbiguousTrigger, triggerMayHaveDispatched } from "./core/trigger-guard.js";
 import { executeRunLifecycle } from "./core/run-lifecycle.js";
-import { beginSendAttempt, finishSendAttempt, loadSendAttempt, sendAttemptMatchesProfile } from "./core/send-attempt.js";
+import { activeSendAttemptId, beginSendAttempt, finishSendAttempt, loadSendAttempt, sendAttemptMatchesProfile } from "./core/send-attempt.js";
 import { executeExecutionScript } from "./core/execution-script-runtime.js";
 import { reconcileRuntimeState } from "./core/runtime-status.js";
 import { buildHarnessOverviewEntry } from "./core/overview.js";
@@ -34,12 +34,15 @@ async function runProfile(name: string, action?: string, args: Record<string, un
   const acknowledged = args.acknowledgeAmbiguous === true;
   // An original possible Send remains locked even after a runner crash, before
   // the normal adapter result can set its in-memory ambiguity guard.
-  if (actualAction === "trigger" && config.adapter === "chatgpt" && state.pendingAttemptId) {
-    const previous = await loadSendAttempt(home, name, state.pendingAttemptId);
+  if (actualAction === "trigger" && config.adapter === "chatgpt") {
+    const unresolvedId = state.pendingAttemptId ?? await activeSendAttemptId(home, name);
+    if (unresolvedId) {
+    const previous = await loadSendAttempt(home, name, unresolvedId);
     if (previous.status === "unknown") return {
       status: "blocked", reason: "UNRECONCILED_AMBIGUOUS_TRIGGER", provider: config.adapter,
       attemptId: previous.id,
     };
+    }
   }
   if (ambiguousTriggerBlocked(state, config.adapter, actualAction, acknowledged)) return {status:"blocked",reason:"UNRECONCILED_AMBIGUOUS_TRIGGER",provider:config.adapter};
   if (!force && actualAction === "trigger") {
@@ -54,17 +57,20 @@ async function runProfile(name: string, action?: string, args: Record<string, un
     execute: async (session) => {
       if (actualAction === "resume") {
         if (config.adapter !== "chatgpt") throw new Error("Send Resume is supported only for ChatGPT existing conversations");
-        const id = args.attemptId ?? (await readState(name)).pendingAttemptId;
+        const id = args.attemptId ?? (await readState(name)).pendingAttemptId ?? await activeSendAttemptId(home, name);
         if (typeof id !== "string") throw new Error("No original Send attempt ID to Resume");
         const original = await loadSendAttempt(home, name, id);
         const cfg = config.adapterConfig as { conversation?: { newChatEachRun?: boolean; conversationId?: string } };
         if (cfg.conversation?.newChatEachRun !== false
           || !sendAttemptMatchesProfile(original, browserBinding, cfg.conversation.conversationId ?? null))
           throw new Error("Resume original Browser Profile or Conversation no longer matches; Send remains locked");
-        if (original.status === "submitted") return {
+        if (original.status === "submitted") {
+          await finishSendAttempt(home, name, id, "submitted");
+          return {
           status: "submitted", submissionState: "submitted", attemptId: id,
           conversationId: original.conversationId, url: `https://chatgpt.com/c/${original.conversationId}`,
         };
+        }
         const value = await registry.execute("chatgpt", "resume", {
           prompt: original.prompt, conversationId: original.conversationId, baseline: original.baseline,
         }, { profileName: name, browser: session, config }) as { status: string };
