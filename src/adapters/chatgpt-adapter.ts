@@ -200,19 +200,40 @@ async function resumeSend(session: BrowserSession, args: Record<string, unknown>
     baseline: z.object({ bubbles: z.number().int().min(0), legacy: z.number().int().min(0) }),
   }).strict().parse(args);
   const url = `https://chatgpt.com/c/${input.conversationId}`;
+  let navigated = false;
   const page = session.page;
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    const navigation = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    navigated = true;
+    const httpStatus = navigation?.status() ?? null;
+    if (httpStatus === null || httpStatus < 200 || httpStatus >= 300) return {
+      status: "unavailable", submissionState: "unknown", reason: "NAVIGATION_HTTP_ERROR",
+      httpStatus, retryable: false, canResume: false,
+    };
+    const pageTitle = await page.title().catch(() => "");
+    const challenge = /^(?:請稍候|请稍候|Just a moment|Checking your browser|Verify you are human)(?:[.!…。 ]|$)/i.test(pageTitle)
+      || /Cloudflare.*(?:challenge|verification)/i.test(pageTitle);
     if (new URL(page.url()).origin !== "https://chatgpt.com"
       || conversationIdFromHref(page.url()) !== input.conversationId) return {
-      status: "pending", submissionState: "unknown", retryable: false, canResume: true,
+      status: "unavailable", submissionState: "unknown", retryable: false, canResume: false,
+      reason: challenge ? "SITE_CHALLENGE" : "CONVERSATION_UNAVAILABLE",
     };
-    const confirmed = await reconcileChatGptSend(page, input.prompt, input.conversationId, input.baseline);
+    // Challenge title is checked before deciding whether an unexpected URL is an ordinary redirect.
+    if (challenge) return {
+      // The origin and saved Conversation match, but the page is still a challenge.
+      status: "unavailable", submissionState: "unknown", reason: "SITE_CHALLENGE",
+      retryable: false, canResume: false,
+    };
+    let turnEvidence: unknown;
+    const confirmed = await reconcileChatGptSend(page, input.prompt, input.conversationId, input.baseline,
+      (evidence) => { turnEvidence = evidence; });
     return confirmed
       ? { status: "submitted", submissionState: "submitted", conversationId: input.conversationId, url }
-      : { status: "pending", submissionState: "unknown", retryable: false, canResume: true };
+      : { status: "pending", submissionState: "unknown", retryable: false, canResume: true,
+        diagnostic: turnEvidence ? { turnEvidence } : undefined };
   } catch {
-    return { status: "pending", submissionState: "unknown", retryable: false, canResume: true };
+    return { status: "unavailable", submissionState: "unknown", retryable: false, canResume: false,
+      reason: navigated ? "PAGE_UNAVAILABLE" : "NAVIGATION_FAILED" };
   }
 }
 
