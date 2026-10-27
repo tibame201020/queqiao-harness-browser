@@ -223,6 +223,17 @@ function correlatedFormattedRender(rendered: string, source: string): boolean {
   return renderedIndex === a.length && omitted + b.length - sourceIndex === missing;
 }
 
+/** Only strip verified single-backtick inline-code delimiters; never infer arbitrary render edits. */
+function expectedInlineCodePresentation(source: string): { rendered: string; codeText: string[] } | null {
+  if (source.includes("```")) return null;
+  const tokens = [...source.matchAll(/(?<!`)`([^`\r\n]+)`(?!`)/g)];
+  if (tokens.length === 0 || tokens.length > 500) return null;
+  if ((source.match(/`/g) ?? []).length !== tokens.length * 2) return null;
+  return {
+    rendered: source.replace(/(?<!`)`([^`\r\n]+)`(?!`)/g, "$1"),
+    codeText: tokens.map((token) => token[1]),
+  };
+}
 /** Keep the same Browser Session open until this particular submitted User Turn is visible and its editor settles. */
 async function awaitPostClickSettlement(page: Page, prompt: string, started: number, initialId: string | null,
   expectedId: string | null, beforeUserTurns: { bubbles: number; legacy: number }): Promise<void> {
@@ -254,10 +265,22 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       const observed = message ? await message.innerText({ timeout: 500 }).catch(() => null) : null;
       reason = typeof observed === "string" ? "full_text_mismatch" : "message_unavailable";
       const hasFormattedCode = !!message && await message.locator("pre code").count().catch(() => 0) > 0;
-      const confirmsContent = (actual: string | null) => typeof actual === "string"
-        && (sameSubmittedText(actual, prompt)
-          || (hasFormattedCode && correlatedFormattedRender(actual, prompt)));
-      newTurnMatches = confirmsContent(observed);
+      const inlineSource = expectedInlineCodePresentation(prompt);
+      const confirmsContent = async (actual: string | null): Promise<boolean> => {
+        if (typeof actual !== "string") return false;
+        if (sameSubmittedText(actual, prompt)) return true;
+        if (hasFormattedCode && correlatedFormattedRender(actual, prompt)) return true;
+        if (!message || !inlineSource) return false;
+        const inline = message.locator("code:not(pre code)");
+        if (await inline.count().catch(() => -1) !== inlineSource.codeText.length) return false;
+        const shown = await inline.allInnerTexts().catch(() => null);
+        return !!shown && shown.length === inlineSource.codeText.length
+          && inlineSource.codeText.every((part, i) => sameSubmittedText(shown[i], part))
+          && sameSubmittedText(actual, inlineSource.rendered);
+      };
+
+
+      newTurnMatches = await confirmsContent(observed);
       if (!newTurnMatches && expansionAttempted && typeof observed === "string") reason = "expanded_text_mismatch";
       if (!newTurnMatches && typeof observed === "string" && message && !expansionAttempted) {
         // ChatGPT can collapse long User bubbles at 10,240 visible characters.
@@ -271,7 +294,7 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
           expansionAttempted = true;
           if (await showMore.click({ timeout: 750 }).then(() => true).catch(() => false)) {
             const expanded = await message.innerText({ timeout: 500 }).catch(() => null);
-            newTurnMatches = confirmsContent(expanded);
+            newTurnMatches = await confirmsContent(expanded);
             reason = newTurnMatches ? "stabilizing" : "expanded_text_mismatch";
           }
         }

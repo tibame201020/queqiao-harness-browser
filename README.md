@@ -155,6 +155,16 @@ source with **1–24 source-only characters removed and no substituted or insert
 content**, matching leading/trailing 64+ character regions, and the verified
 presend editor contents. This is a narrow formatting-correlation proof, not a guarantee
 that ChatGPT's renderer preserves source Markdown.
+For inline Markdown code (without fenced blocks), a separate narrow proof removes
+**only matched single-backtick pairs** from the already verified source, requires
+a matching number of actual `code:not(pre code)` nodes with each inline code value
+preserved in order, and requires **full equality** between this exact presentation
+and the new User bubble. Arbitrary changes, unmatched syntax, absent code nodes,
+wrong conversation, nonempty composer, or a second User Turn cannot be accepted.
+The ChatGPT trigger receipt retains backward-compatible `triggered` / `unavailable`
+/ `ambiguous` statuses and exposes explicit `submissionState` values:
+`submitted` / `not_sent` / `unknown`, respectively. This is Browser transport
+proof, never proof of native operations or task correctness.
 Current ChatGPT user bubbles use `[data-user-message-bubble="true"]`; the older
 `[data-message-author-role="user"]` remains a fallback. Count one DOM family at a time
 to avoid treating nested wrappers as multiple submitted turns.
