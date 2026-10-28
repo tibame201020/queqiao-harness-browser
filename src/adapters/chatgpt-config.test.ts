@@ -43,7 +43,28 @@ describe("runtime conversation destination", () => {
     expect(target.conversation.conversationId).toBe(id);
     expect(cfg.conversation.newChatEachRun).toBe(true);
   });
-  it("rejects partial, foreign, malformed and project targets before touching the browser", () => {
+  it("accepts a canonical Project URL as an explicitly opted-in per-run target", () => {
+    const cfg=normalizeChatGptAdapterConfig({conversation:{newChatEachRun:true,allowRuntimeTarget:true}});
+    const projectUrl="https://chatgpt.com/g/g-p-synthetic-project/c/"+id;
+    const target=selectChatGptTriggerConfig(cfg,{...args,conversationUrl:projectUrl});
+    expect(target.conversation).toMatchObject({newChatEachRun:false,conversationId:id});
+    expect(cfg.conversation.newChatEachRun).toBe(true);
+  });
+  it("rejects noncanonical, foreign and mismatched Project URLs", () => {
+    const cfg=normalizeChatGptAdapterConfig({conversation:{newChatEachRun:true,allowRuntimeTarget:true}});
+    for(const projectUrl of [
+      "https://chatgpt.com/g/g-p-synthetic-project/c/"+other,
+      "https://chatgpt.com/g/g-p-synthetic-project/c/"+id+"?tab=1",
+      "https://chatgpt.com/g/g-p-synthetic-project/c/"+id+"#anchor",
+      "https://chatgpt.com/g/g-p-synthetic-project/c/"+id+"/",
+      "https://chatgpt.com/g/g-p-synthetic-project/c/"+id+"/extra",
+      "https://chatgpt.com:443/g/g-p-synthetic-project/c/"+id,
+      "https://evil.example/g/g-p-synthetic-project/c/"+id,
+      "http://chatgpt.com/g/g-p-synthetic-project/c/"+id,
+      "https://chatgpt.com/g/../c/"+id,
+    ]) expect(()=>selectChatGptTriggerConfig(cfg,{...args,conversationUrl:projectUrl})).toThrow();
+  });
+  it("rejects partial, foreign, malformed and incompatible configured project targets before touching the browser", () => {
     const cfg=normalizeChatGptAdapterConfig({conversation:{newChatEachRun:true,allowRuntimeTarget:true}});
     for(const bad of [
       {conversationId:id}, {conversationUrl:url},

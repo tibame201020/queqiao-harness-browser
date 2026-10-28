@@ -12,6 +12,37 @@ import { deleteConversation, listProjectConversations, listProjects, openConvers
 
 const conversationIdSchema = z.string().uuid();
 
+// URL grammar is owned by the ChatGPT adapter. Callers treat these targets as opaque.
+function parseCanonicalConversationUrl(raw: string): {conversationId: string; conversationUrl: string} | null {
+  if (typeof raw !== "string" || raw.length > 600) return null;
+  let url: URL;
+  try { url = new URL(raw); } catch { return null; }
+  if (url.origin !== "https://chatgpt.com" || url.href !== raw ||
+      url.username || url.password || url.search || url.hash) return null;
+  const pattern = new RegExp("^/c/([0-9a-f-]{36})$", "i");
+  const projectPattern = new RegExp("^/g/g-p-[A-Za-z0-9_-]{1,120}/c/([0-9a-f-]{36})$", "i");
+  const match = url.pathname.match(pattern) ?? url.pathname.match(projectPattern);
+  if (!match || !conversationIdSchema.safeParse(match[1]).success) return null;
+  return {conversationId: match[1], conversationUrl: raw};
+}
+
+function resolveConversationTargets(args: Record<string, unknown>) {
+  const input = z.object({urls: z.array(z.string().max(5000)).min(1).max(128)}).strict().parse(args);
+  const candidates = new Map<string, {conversationId: string; conversationUrl: string}>();
+  for (const raw of input.urls) {
+    const parsed = parseCanonicalConversationUrl(raw);
+    if (!parsed) continue;
+    const previous = candidates.get(parsed.conversationId);
+    if (previous && previous.conversationUrl !== parsed.conversationUrl)
+      return {status: "unresolved", reason: "CANDIDATE_IDENTITY_CONFLICT", candidates: []};
+    candidates.set(parsed.conversationId, parsed);
+    if (candidates.size > 16)
+      return {status: "unresolved", reason: "TOO_MANY_CANDIDATES", candidates: []};
+  }
+  if (candidates.size === 0) return {status: "unresolved", reason: "NO_CANDIDATES", candidates: []};
+  return {status: "complete", candidates: [...candidates.values()]};
+}
+
 const chatGptConfigSchema = z.object({
   project: z.object({
     enabled: z.boolean().default(false),
@@ -82,7 +113,12 @@ export function selectChatGptTriggerConfig(cfg: ChatGptAdapterConfig, args: Reco
     conversationId: conversationIdSchema,
     conversationUrl: z.string().url(),
   }).parse(args);
-  if (input.conversationUrl !== `https://chatgpt.com/c/${input.conversationId}`) {
+  const targetUrl = new URL(input.conversationUrl);
+  const standardPath = `/c/${input.conversationId}`;
+  const projectPath = new RegExp(`^/g/g-p-[A-Za-z0-9_-]{1,120}/c/${input.conversationId}$`);
+  if (targetUrl.origin !== "https://chatgpt.com" || targetUrl.href !== input.conversationUrl ||
+      targetUrl.username || targetUrl.password || targetUrl.search || targetUrl.hash ||
+      (targetUrl.pathname !== standardPath && !projectPath.test(targetUrl.pathname))) {
     throw new Error("RUNTIME_TARGET_IDENTITY_MISMATCH");
   }
   return { ...cfg, conversation: {
@@ -145,7 +181,12 @@ async function cleanupForTrigger(session: BrowserSession, cfg: ChatGptAdapterCon
   }
 }
 
-async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapterConfig): Promise<{ projectId?: string }> {
+async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapterConfig, runtimeTargetUrl?: string): Promise<{ projectId?: string }> {
+  if (runtimeTargetUrl) {
+    await session.page.goto(runtimeTargetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (session.page.url() !== runtimeTargetUrl) throw new Error("RUNTIME_TARGET_NAVIGATION_MISMATCH");
+    return {};
+  }
   if (cfg.project.enabled) {
     if (cfg.conversation.newChatEachRun && !cfg.cleanup.enabled && !cfg.project.requiredSourceName) {
       return startProjectNewConversation(session.page, cfg.project.name!);
@@ -183,10 +224,11 @@ async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapter
 async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>,
   beforeSend?: (prompt: string, input: { conversationId: string | null; baseline: { bubbles: number; legacy: number } }) => Promise<void>) {
   cfg = selectChatGptTriggerConfig(cfg, args);
+  const runtimeTargetUrl = typeof args.conversationUrl === "string" ? args.conversationUrl : undefined;
   const prompt = String(args.prompt || cfg.trigger.prompt || "");
   if (!prompt) throw new Error("chatgpt trigger requires trigger.prompt or args.prompt");
 
-  const target = await prepareTriggerTarget(session, cfg);
+  const target = await prepareTriggerTarget(session, cfg, runtimeTargetUrl);
   const page = session.page;
   let started: number;
   try {
@@ -212,6 +254,7 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
     return notConfirmed();
   }
   const transientUrl = page.url();
+  if (runtimeTargetUrl && transientUrl !== runtimeTargetUrl) return notConfirmed();
   const conversationId = conversationIdFromHref(transientUrl);
   if (!conversationId || (!cfg.conversation.newChatEachRun && conversationId !== cfg.conversation.conversationId)) return notConfirmed();
   const url = target.projectId ? projectConversationUrl(target.projectId, conversationId) : transientUrl;
@@ -326,6 +369,7 @@ export const chatgptAdapter: HarnessAdapter = {
   bootstrapUrl: "https://chatgpt.com/",
   validateConfig: normalizeChatGptAdapterConfig,
   async execute(action, args, context) {
+    if (action === "resolve_targets") return resolveConversationTargets(args);
     const session = context.browser as BrowserSession | undefined;
     if (!session) throw new Error("chatgpt adapter requires a browser session");
     const cfg = normalizeChatGptAdapterConfig((context.config as { adapterConfig?: unknown } | undefined)?.adapterConfig);
