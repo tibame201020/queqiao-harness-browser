@@ -1,6 +1,6 @@
 {
   "name": "@tibame201020/queqiao-harness-browser",
-  "version": "0.5.5-rc.6",
+  "version": "0.5.5",
   "description": "Browser harness runtime extension for Queqiao",
   "type": "module",
   "main": "./dist/index.js",
@@ -50,7 +50,7 @@
     "module": "./dist/index.js",
     "manifest": {
       "id": "dev.queqiao.harness-browser",
-      "version": "0.5.5-rc.6",
+      "version": "0.5.5",
       "displayName": "Queqiao Harness Browser",
       "host": {
         "kind": "worker"
