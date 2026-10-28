@@ -21,7 +21,9 @@ const chatGptConfigSchema = z.object({
   conversation: z.object({
     newChatEachRun: z.boolean().default(true),
     conversationId: conversationIdSchema.optional(),
-  }).default({ newChatEachRun: true }),
+    // Explicit opt-in; old profiles remain new-chat by default.
+    allowRuntimeTarget: z.boolean().default(false),
+  }).default({ newChatEachRun: true, allowRuntimeTarget: false }),
   cleanup: z.object({
     enabled: z.boolean().default(false),
     maxConversations: z.number().int().positive().max(1000).optional(),
@@ -63,6 +65,29 @@ export type ChatGptAdapterConfig = z.infer<typeof chatGptConfigSchema>;
 
 export function normalizeChatGptAdapterConfig(value: unknown): ChatGptAdapterConfig {
   return chatGptConfigSchema.parse(value ?? {});
+}
+
+// Resolve an optional per-run target before any browser operation. The destination
+// must be a trusted n8n/Runner binding, not extracted from a model-generated reply.
+export function selectChatGptTriggerConfig(cfg: ChatGptAdapterConfig, args: Record<string, unknown>): ChatGptAdapterConfig {
+  const hasId=Object.prototype.hasOwnProperty.call(args,"conversationId");
+  const hasUrl=Object.prototype.hasOwnProperty.call(args,"conversationUrl");
+  if (!hasId && !hasUrl) return cfg;
+  if (!cfg.conversation.allowRuntimeTarget) throw new Error("RUNTIME_TARGET_DISABLED");
+  if (cfg.project.enabled || cfg.cleanup.enabled || cfg.trigger.pluginId ||
+      !cfg.conversation.newChatEachRun || cfg.conversation.conversationId) {
+    throw new Error("RUNTIME_TARGET_UNSUPPORTED");
+  }
+  const input=z.object({
+    conversationId: conversationIdSchema,
+    conversationUrl: z.string().url(),
+  }).parse(args);
+  if (input.conversationUrl !== `https://chatgpt.com/c/${input.conversationId}`) {
+    throw new Error("RUNTIME_TARGET_IDENTITY_MISMATCH");
+  }
+  return { ...cfg, conversation: {
+    ...cfg.conversation, newChatEachRun: false, conversationId: input.conversationId,
+  }};
 }
 
 async function requireSource(session: BrowserSession, sourceName: string): Promise<void> {
@@ -157,6 +182,7 @@ async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapter
 
 async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>,
   beforeSend?: (prompt: string, input: { conversationId: string | null; baseline: { bubbles: number; legacy: number } }) => Promise<void>) {
+  cfg = selectChatGptTriggerConfig(cfg, args);
   const prompt = String(args.prompt || cfg.trigger.prompt || "");
   if (!prompt) throw new Error("chatgpt trigger requires trigger.prompt or args.prompt");
 

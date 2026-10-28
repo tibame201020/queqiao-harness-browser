@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeChatGptAdapterConfig } from "./chatgpt-adapter.js";
+import { normalizeChatGptAdapterConfig, selectChatGptTriggerConfig } from "./chatgpt-adapter.js";
 
 describe("ChatGPT adapter config contract", () => {
   it("defaults to non-project, new-chat, no-cleanup", () => {
@@ -8,24 +8,55 @@ describe("ChatGPT adapter config contract", () => {
     expect(cfg.conversation.newChatEachRun).toBe(true);
     expect(cfg.cleanup.enabled).toBe(false);
   });
-
   it("requires project name only when project mode is enabled", () => {
     expect(() => normalizeChatGptAdapterConfig({ project: { enabled: true } })).toThrow(/project.name/);
     expect(normalizeChatGptAdapterConfig({ project: { enabled: true, name: "Demo" } }).project.name).toBe("Demo");
   });
-
   it("requires an explicit conversation id when reusing a conversation", () => {
     expect(() => normalizeChatGptAdapterConfig({ conversation: { newChatEachRun: false } })).toThrow(/conversationId/);
     expect(normalizeChatGptAdapterConfig({ conversation: { newChatEachRun: false, conversationId: "123e4567-e89b-12d3-a456-426614174000" } }).conversation.conversationId).toBeTruthy();
   });
-
   it("keeps cleanup opt-in and project-scoped", () => {
     expect(() => normalizeChatGptAdapterConfig({ cleanup: { enabled: true, maxConversations: 3 } })).toThrow(/project/);
     const cfg = normalizeChatGptAdapterConfig({ project: { enabled: true, name: "Demo" }, cleanup: { enabled: true, maxConversations: 3 } });
     expect(cfg.cleanup).toEqual({ enabled: true, maxConversations: 3 });
   });
-
   it("rejects project source requirements outside project mode", () => {
     expect(() => normalizeChatGptAdapterConfig({ project: { enabled: false, requiredSourceName: "Rules" } })).toThrow(/requiredSourceName/);
+  });
+});
+
+describe("runtime conversation destination", () => {
+  const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const other = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const url = "https://chatgpt.com/c/" + id;
+  const args = {prompt:"synthetic only",conversationId:id,conversationUrl:url};
+  it("defaults to disabled and preserves existing new-chat behavior", () => {
+    const cfg=normalizeChatGptAdapterConfig({});
+    expect(selectChatGptTriggerConfig(cfg,{prompt:"x"})).toEqual(cfg);
+    expect(() => selectChatGptTriggerConfig(cfg,args)).toThrow(/RUNTIME_TARGET_DISABLED/);
+  });
+  it("uses exactly the supplied verified conversation with explicit profile opt-in", () => {
+    const cfg=normalizeChatGptAdapterConfig({conversation:{newChatEachRun:true,allowRuntimeTarget:true}});
+    const target=selectChatGptTriggerConfig(cfg,args);
+    expect(target.conversation.newChatEachRun).toBe(false);
+    expect(target.conversation.conversationId).toBe(id);
+    expect(cfg.conversation.newChatEachRun).toBe(true);
+  });
+  it("rejects partial, foreign, malformed and project targets before touching the browser", () => {
+    const cfg=normalizeChatGptAdapterConfig({conversation:{newChatEachRun:true,allowRuntimeTarget:true}});
+    for(const bad of [
+      {conversationId:id}, {conversationUrl:url},
+      {...args,conversationId:other},
+      {...args,conversationUrl:"https://malicious.invalid/c/"+id},
+      {...args,conversationUrl:url+"?x=1"},
+      {...args,conversationId:"not-uuid"},
+    ]) expect(()=>selectChatGptTriggerConfig(cfg,bad)).toThrow();
+    const project=normalizeChatGptAdapterConfig({project:{enabled:true,name:"Synthetic"},
+      conversation:{newChatEachRun:true,allowRuntimeTarget:true}});
+    expect(()=>selectChatGptTriggerConfig(project,args)).toThrow(/RUNTIME_TARGET_UNSUPPORTED/);
+    const configured=normalizeChatGptAdapterConfig({conversation:{newChatEachRun:false,
+      conversationId:other,allowRuntimeTarget:true}});
+    expect(()=>selectChatGptTriggerConfig(configured,args)).toThrow(/RUNTIME_TARGET_UNSUPPORTED/);
   });
 });
