@@ -29,6 +29,12 @@ function pidAlive(pid: number): boolean { try { process.kill(pid, 0); return tru
 async function runProfile(name: string, action?: string, args: Record<string, unknown> = {}, force = false) {
   const config = await loadConfig(home, name);
   const actualAction = action || config.defaultAction;
+  // Pure URL resolution is independent of the browser and must not mutate profile state.
+  if (actualAction === "resolve_targets") {
+    if (config.adapter !== "chatgpt") throw new Error("RESOLVE_TARGETS_ADAPTER_UNSUPPORTED");
+    const result = await registry.execute("chatgpt", actualAction, args, {profileName:name,config});
+    return { status:"ok", action:actualAction, result };
+  }
   const state = await readState(name);
   const browserBinding = createHash("sha256").update(JSON.stringify(config.browser)).digest("hex");
   const acknowledged = args.acknowledgeAmbiguous === true;
