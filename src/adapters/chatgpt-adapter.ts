@@ -12,6 +12,37 @@ import { deleteConversation, listProjectConversations, listProjects, openConvers
 
 const conversationIdSchema = z.string().uuid();
 
+// URL grammar is owned by the ChatGPT adapter. Callers treat these targets as opaque.
+function parseCanonicalConversationUrl(raw: string): {conversationId: string; conversationUrl: string} | null {
+  if (typeof raw !== "string" || raw.length > 600) return null;
+  let url: URL;
+  try { url = new URL(raw); } catch { return null; }
+  if (url.origin !== "https://chatgpt.com" || url.href !== raw ||
+      url.username || url.password || url.search || url.hash) return null;
+  const pattern = new RegExp("^/c/([0-9a-f-]{36})$", "i");
+  const projectPattern = new RegExp("^/g/g-p-[A-Za-z0-9_-]{1,120}/c/([0-9a-f-]{36})$", "i");
+  const match = url.pathname.match(pattern) ?? url.pathname.match(projectPattern);
+  if (!match || !conversationIdSchema.safeParse(match[1]).success) return null;
+  return {conversationId: match[1], conversationUrl: raw};
+}
+
+function resolveConversationTargets(args: Record<string, unknown>) {
+  const input = z.object({urls: z.array(z.string().max(5000)).min(1).max(128)}).strict().parse(args);
+  const candidates = new Map<string, {conversationId: string; conversationUrl: string}>();
+  for (const raw of input.urls) {
+    const parsed = parseCanonicalConversationUrl(raw);
+    if (!parsed) continue;
+    const previous = candidates.get(parsed.conversationId);
+    if (previous && previous.conversationUrl !== parsed.conversationUrl)
+      return {status: "unresolved", reason: "CANDIDATE_IDENTITY_CONFLICT", candidates: []};
+    candidates.set(parsed.conversationId, parsed);
+    if (candidates.size > 16)
+      return {status: "unresolved", reason: "TOO_MANY_CANDIDATES", candidates: []};
+  }
+  if (candidates.size === 0) return {status: "unresolved", reason: "NO_CANDIDATES", candidates: []};
+  return {status: "complete", candidates: [...candidates.values()]};
+}
+
 const chatGptConfigSchema = z.object({
   project: z.object({
     enabled: z.boolean().default(false),
@@ -338,6 +369,7 @@ export const chatgptAdapter: HarnessAdapter = {
   bootstrapUrl: "https://chatgpt.com/",
   validateConfig: normalizeChatGptAdapterConfig,
   async execute(action, args, context) {
+    if (action === "resolve_targets") return resolveConversationTargets(args);
     const session = context.browser as BrowserSession | undefined;
     if (!session) throw new Error("chatgpt adapter requires a browser session");
     const cfg = normalizeChatGptAdapterConfig((context.config as { adapterConfig?: unknown } | undefined)?.adapterConfig);
