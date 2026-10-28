@@ -82,7 +82,12 @@ export function selectChatGptTriggerConfig(cfg: ChatGptAdapterConfig, args: Reco
     conversationId: conversationIdSchema,
     conversationUrl: z.string().url(),
   }).parse(args);
-  if (input.conversationUrl !== `https://chatgpt.com/c/${input.conversationId}`) {
+  const targetUrl = new URL(input.conversationUrl);
+  const standardPath = `/c/${input.conversationId}`;
+  const projectPath = new RegExp(`^/g/g-p-[A-Za-z0-9_-]{1,120}/c/${input.conversationId}$`);
+  if (targetUrl.origin !== "https://chatgpt.com" || targetUrl.href !== input.conversationUrl ||
+      targetUrl.username || targetUrl.password || targetUrl.search || targetUrl.hash ||
+      (targetUrl.pathname !== standardPath && !projectPath.test(targetUrl.pathname))) {
     throw new Error("RUNTIME_TARGET_IDENTITY_MISMATCH");
   }
   return { ...cfg, conversation: {
@@ -145,7 +150,12 @@ async function cleanupForTrigger(session: BrowserSession, cfg: ChatGptAdapterCon
   }
 }
 
-async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapterConfig): Promise<{ projectId?: string }> {
+async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapterConfig, runtimeTargetUrl?: string): Promise<{ projectId?: string }> {
+  if (runtimeTargetUrl) {
+    await session.page.goto(runtimeTargetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (session.page.url() !== runtimeTargetUrl) throw new Error("RUNTIME_TARGET_NAVIGATION_MISMATCH");
+    return {};
+  }
   if (cfg.project.enabled) {
     if (cfg.conversation.newChatEachRun && !cfg.cleanup.enabled && !cfg.project.requiredSourceName) {
       return startProjectNewConversation(session.page, cfg.project.name!);
@@ -183,10 +193,11 @@ async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapter
 async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>,
   beforeSend?: (prompt: string, input: { conversationId: string | null; baseline: { bubbles: number; legacy: number } }) => Promise<void>) {
   cfg = selectChatGptTriggerConfig(cfg, args);
+  const runtimeTargetUrl = typeof args.conversationUrl === "string" ? args.conversationUrl : undefined;
   const prompt = String(args.prompt || cfg.trigger.prompt || "");
   if (!prompt) throw new Error("chatgpt trigger requires trigger.prompt or args.prompt");
 
-  const target = await prepareTriggerTarget(session, cfg);
+  const target = await prepareTriggerTarget(session, cfg, runtimeTargetUrl);
   const page = session.page;
   let started: number;
   try {
@@ -212,6 +223,7 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
     return notConfirmed();
   }
   const transientUrl = page.url();
+  if (runtimeTargetUrl && transientUrl !== runtimeTargetUrl) return notConfirmed();
   const conversationId = conversationIdFromHref(transientUrl);
   if (!conversationId || (!cfg.conversation.newChatEachRun && conversationId !== cfg.conversation.conversationId)) return notConfirmed();
   const url = target.projectId ? projectConversationUrl(target.projectId, conversationId) : transientUrl;

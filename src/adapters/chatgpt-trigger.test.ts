@@ -116,6 +116,38 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("Project runtime trigger destination (#37)", () => {
+  const projectUrl = "https://chatgpt.com/g/g-p-synthetic-project/c/" + ID;
+  const run = (f: ReturnType<typeof fixture>) => chatgptAdapter.execute("trigger", {
+    prompt: "synthetic V2 return receipt", conversationId: ID, conversationUrl: projectUrl,
+  }, { browser: { page: f.page }, config: { adapterConfig: {
+    conversation: { newChatEachRun: true, allowRuntimeTarget: true },
+  } } });
+
+  it("navigates directly to the exact Project conversation and returns its scoped URL", async () => {
+    const f = fixture({resume:true,siteBubble:true});
+    const receipt = await run(f);
+    expect(receipt).toMatchObject({
+      status: "triggered", submissionState: "submitted", conversationId: ID, url: projectUrl,
+    });
+    expect(f.page.goto).toHaveBeenCalledWith(projectUrl, expect.any(Object));
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+  it("fails before sending when the browser navigates to another target", async () => {
+    const f = fixture({resume:true,siteBubble:true});
+    f.page.goto.mockImplementation(async () => undefined);
+    await expect(run(f)).rejects.toThrow(/RUNTIME_TARGET_NAVIGATION_MISMATCH/);
+    expect(f.calls).not.toContain("send");
+  });
+  it("does not acknowledge an unrelated post-send conversation", async () => {
+    const f = fixture({resume:true,siteBubble:true,wrongResumeId:true});
+    const receipt = await run(f);
+    expect(receipt).toMatchObject({status:"ambiguous", retryable:false});
+    expect(f.calls.filter(x=>x==="send")).toHaveLength(1);
+  });
+});
+
+
 describe("ChatGPT composer compatibility", () => {
   it("persists exact pre-click Resume baseline once and never exposes source in the acknowledgement (#30)", async () => {
     const f = fixture({ resume: true, siteBubble: true });
