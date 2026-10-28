@@ -22,9 +22,10 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test && npm run build && npm run test:package",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:package && npm run test:stateless-runner",
     "prepack": "npm run check",
     "test:package": "node scripts/check-package-import.mjs",
+    "test:stateless-runner": "node scripts/check-stateless-runner.mjs",
     "dev:stage": "npm run build && node scripts/prepare-local-install.mjs"
   },
   "engines": {
