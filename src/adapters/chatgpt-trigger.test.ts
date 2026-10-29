@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatgptAdapter } from "./chatgpt-adapter.js";
+import { sendChatGptPrompt } from "./chatgpt-send.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean; renderedInline?: boolean; inlineMutate?: boolean; inlineDomMissing?: boolean; inlineCodeMutate?: boolean; wrongOrigin?: boolean; wrongResumeId?: boolean; pendingFirstChat?: boolean; saveAtPoll?: number; initialDraft?: string; onWait?: (ms: number) => void; contentMatchCount?: number; contentReadFailure?: boolean; turnReadFailure?: boolean; contentCountFailure?: boolean; outermostMatchCount?: number } = {}) {
+function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean; renderedInline?: boolean; inlineMutate?: boolean; inlineDomMissing?: boolean; inlineCodeMutate?: boolean; wrongOrigin?: boolean; wrongResumeId?: boolean; pendingFirstChat?: boolean; saveAtPoll?: number; projectFirstChat?: boolean; wrongProject?: boolean; wrongCanonicalProject?: boolean; initialDraft?: string; onWait?: (ms: number) => void; contentMatchCount?: number; contentReadFailure?: boolean; turnReadFailure?: boolean; contentCountFailure?: boolean; outermostMatchCount?: number } = {}) {
   let logicalNow = 0;
   vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   const calls: string[] = [];
   let editorText = opts.initialDraft ?? "";
-  let url = "https://chatgpt.com/";
+  let url = opts.projectFirstChat ? "https://chatgpt.com/g/g-p-synthetic/project" : "https://chatgpt.com/";
   let userTurns = opts.resume ? 1 : 0;
   let lastUserText = "existing synthetic earlier turn";
   let pendingUserText: string | null = null;
@@ -59,7 +60,8 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
       if (!args?.trial) {
         calls.push("send");
         if (!opts.resume) url = opts.wrongOrigin ? `https://invalid.example/c/${ID}` : opts.pendingFirstChat
-          ? `https://chatgpt.com/c/local-chatgpt%3A${ID}` : `https://chatgpt.com/c/${ID}`;
+          ? (opts.projectFirstChat ? `https://chatgpt.com/g/${opts.wrongProject ? "g-p-unrelated" : "g-p-synthetic"}/c/local-chatgpt%3A${ID}` : `https://chatgpt.com/c/local-chatgpt%3A${ID}`)
+          : (opts.projectFirstChat ? `https://chatgpt.com/g/g-p-synthetic/c/${ID}` : `https://chatgpt.com/c/${ID}`);
         else if (opts.wrongResumeId) url = "https://chatgpt.com/c/22222222-2222-4222-8222-222222222222";
         if (!opts.postClickStuck) {
           if (opts.postClickSettleAfter !== undefined) pendingUserText = editorText;
@@ -101,7 +103,7 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
       opts.onWait?.(duration);
       polls++;
       if (opts.pendingFirstChat && opts.saveAtPoll !== undefined && polls >= opts.saveAtPoll) {
-        url = `https://chatgpt.com/c/${ID}`;
+        url = opts.projectFirstChat ? `https://chatgpt.com/g/${opts.wrongCanonicalProject ? "g-p-unrelated" : "g-p-synthetic"}/c/${ID}` : `https://chatgpt.com/c/${ID}`;
       }
       if (pendingUserText !== null && polls >= (opts.postClickSettleAfter ?? 0)) {
         completeUserTurn(pendingUserText);
@@ -453,6 +455,36 @@ describe("ChatGPT composer compatibility", () => {
     expect(clock).toBeGreaterThanOrEqual(6_600);
     expect(clock).toBeLessThanOrEqual(12_200);
     expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it("Issue #53 RED: delayed canonical save in the exact Project is recognized only after a verified single first Turn", async () => {
+    let clock = 0;
+    const f = fixture({ siteBubble: true, projectFirstChat: true, pendingFirstChat: true,
+      saveAtPoll: 34, onWait: ms => { clock += ms; } });
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    await expect(sendChatGptPrompt(f.page as unknown as Parameters<typeof sendChatGptPrompt>[0], "SYNTHETIC_PROJECT_PROVISIONAL_WITH_DELAYED_SAVE"))
+      .resolves.toEqual(expect.any(Number));
+    expect(clock).toBeGreaterThanOrEqual(6_600);
+    expect(clock).toBeLessThanOrEqual(12_200);
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it.each([
+    { saveAtPoll: undefined },
+    { saveAtPoll: 34, postedDifferentText: true },
+    { saveAtPoll: 34, concurrentNewTurn: true },
+    { saveAtPoll: 34, composerStuck: true },
+    { saveAtPoll: 34, wrongProject: true },
+    { saveAtPoll: 34, wrongCanonicalProject: true },
+  ])("Issue #53: Project provisional stays UNKNOWN without one owned message and canonical target (%j)", async flags => {
+    let clock = 0;
+    const f = fixture({ siteBubble: true, projectFirstChat: true, pendingFirstChat: true,
+      onWait: ms => { clock += ms; }, ...flags });
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    await expect(sendChatGptPrompt(f.page as unknown as Parameters<typeof sendChatGptPrompt>[0], "SYNTHETIC_PROJECT_NOT_PROVEN_53"))
+      .rejects.toMatchObject({ code: "DISPATCH_AMBIGUOUS" });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    expect(clock).toBeLessThanOrEqual(12_200);
   });
 
   it.each([

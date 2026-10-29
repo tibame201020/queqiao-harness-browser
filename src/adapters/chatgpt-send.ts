@@ -265,7 +265,7 @@ function expectedInlineCodePresentation(source: string): { rendered: string; cod
 /** Keep the same Browser Session open until this particular submitted User Turn is visible and its editor settles. */
 async function awaitPostClickSettlement(page: Page, prompt: string, started: number, initialId: string | null,
   expectedId: string | null, beforeUserTurns: { bubbles: number; legacy: number },
-  onEvidence?: (value: PostClickTurnEvidence) => void): Promise<void> {
+  onEvidence?: (value: PostClickTurnEvidence) => void, firstChatProjectId?: string): Promise<void> {
   const clickedAt = Date.now();
   const evidence: PostClickTurnEvidence = {
     before: { ...beforeUserTurns },
@@ -289,11 +289,16 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     const currentId = safeUrl(page).id;
     const targetValid = expectedId
       ? currentId === expectedId && initialId === expectedId
-      : currentId !== null && (initialId === null || currentId === initialId);
+      : currentId !== null && (initialId === null || currentId === initialId)
+        && (!firstChatProjectId || snapshot.state.url ===
+          "https://chatgpt.com/g/" + firstChatProjectId + "/c/" + currentId);
     // New-chat / -> /c/{id} is the expected first-Send navigation. Pre-click remains strict.
     snapshot.state.sameTarget = targetValid;
+    // A provisional local UUID is never a saved Conversation ID.
+    // Project preview is owned only when its ID matches the pre-click landing.
+    const provisionalRoute = /^https:\/\/chatgpt\.com\/(?:g\/(g-p-[A-Za-z0-9_-]{1,120})\/)?c\/local-chatgpt%3A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.exec(snapshot.state.url);
     const provisionalFirstChat = initialId === null && expectedId === null
-      && /^https:\/\/chatgpt\.com\/c\/local-chatgpt%3A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(snapshot.state.url);
+      && !!provisionalRoute && (provisionalRoute[1] ?? null) === (firstChatProjectId ?? null);
     // Current ChatGPT renders a user bubble without the former author-role attribute.
     // Select one family, never count nested old/new wrappers as two User Turns.
     const bubbles = page.locator(USER_BUBBLES);
@@ -459,7 +464,11 @@ export async function reconcileChatGptSend(page: Page, prompt: string, expectedI
 export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?: string,
   beforeClick?: (baseline: { bubbles: number; legacy: number }) => Promise<void>): Promise<number> {
   const started = Date.now();
-  const initialId = safeUrl(page).id;
+  const initialLocation = safeUrl(page);
+  const initialId = initialLocation.id;
+  // The original Project is read only from a validated first-party landing URL.
+  const firstChatProjectId = /^https:\/\/chatgpt\.com\/g\/(g-p-[A-Za-z0-9_-]{1,120})\/project$/
+    .exec(initialLocation.url)?.[1];
   const targetId = expectedId ?? null;
   let latest = await inspect(page, "precompose", started, initialId, targetId);
   // Poll a bounded predicate, never use a blind fixed sleep to guess generation readiness.
@@ -553,7 +562,7 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
     throw diagnostic("DISPATCH_AMBIGUOUS", snapshot);
   }
   try {
-    await awaitPostClickSettlement(page, prompt, started, initialId, targetId, beforeUserTurns);
+    await awaitPostClickSettlement(page, prompt, started, initialId, targetId, beforeUserTurns, undefined, firstChatProjectId);
   } catch (error) {
     if (error instanceof ChatGptSendError) throw error;
     // A post-click DOM/page failure is never safe to reclassify as pre-send or auto-resend.
