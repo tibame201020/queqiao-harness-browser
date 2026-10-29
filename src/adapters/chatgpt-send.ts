@@ -36,6 +36,14 @@ type PostClickTurnEvidence = {
   verifiedNewTurn: boolean;
   sameCountLastMatchesOriginal: boolean;
   sameCountLastChanged: boolean;
+  // Count and categorical outcome only; no message content or DOM in diagnostics.
+  messageInspection?: {
+    family: "bubble" | "legacy";
+    contentMatches: number;
+    outermostMatches: number;
+    readOutcome: "read" | "read_failed" | "ambiguous_content" | "selector_failed";
+    provisionalFirstChat: boolean;
+  };
   samples: { bubbles: number; legacy: number; correctTarget: boolean; editorEmpty: boolean; generationActive: boolean }[];
 };
 
@@ -311,14 +319,31 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       }
     }
     let newTurnMatches = false;
+    evidence.messageInspection = undefined;
     let reason: Readiness["postClickReason"] = targetValid ? "new_turn_absent" : "target_unconfirmed";
     if ((targetValid || provisionalFirstChat) && turnCount === priorCount + 1 && priorCount >= 0) {
       const turn = turns.nth(turnCount - 1);
       // Prefer the actual bubble content, excluding copy/edit buttons owned by the outer turn.
       const contents = turn.locator(".whitespace-pre-wrap");
       const count = await contents.count().catch(() => -1);
-      const message = count === 1 ? contents.first() : count === 0 ? turn : null;
+      // One User bubble can contain nested whitespace-preserving spans.
+      // Only a unique outermost root is safe; sibling roots remain ambiguous.
+      const outermost = count > 1
+        ? turn.locator(".whitespace-pre-wrap:not(.whitespace-pre-wrap .whitespace-pre-wrap)")
+        : null;
+      const outermostMatches = outermost ? await outermost.count().catch(() => -1) : count;
+      const message = count === 0 ? turn : count === 1 ? contents.first()
+        : outermostMatches === 1 ? outermost!.first() : null;
       const observed = message ? await message.innerText({ timeout: 500 }).catch(() => null) : null;
+      evidence.messageInspection = {
+        family: useBubbles ? "bubble" : "legacy",
+        contentMatches: count,
+        outermostMatches,
+        readOutcome: count < 0 || outermostMatches < 0 ? "selector_failed"
+          : count > 1 && outermostMatches !== 1 ? "ambiguous_content"
+          : typeof observed === "string" ? "read" : "read_failed",
+        provisionalFirstChat,
+      };
       reason = typeof observed === "string" ? "full_text_mismatch" : "message_unavailable";
       const hasFormattedCode = !!message && await message.locator("pre code").count().catch(() => 0) > 0;
       const inlineSource = expectedInlineCodePresentation(prompt);

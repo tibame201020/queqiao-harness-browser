@@ -3,7 +3,7 @@ import { chatgptAdapter } from "./chatgpt-adapter.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean; renderedInline?: boolean; inlineMutate?: boolean; inlineDomMissing?: boolean; inlineCodeMutate?: boolean; wrongOrigin?: boolean; wrongResumeId?: boolean; pendingFirstChat?: boolean; saveAtPoll?: number; initialDraft?: string; onWait?: (ms: number) => void } = {}) {
+function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean; renderedInline?: boolean; inlineMutate?: boolean; inlineDomMissing?: boolean; inlineCodeMutate?: boolean; wrongOrigin?: boolean; wrongResumeId?: boolean; pendingFirstChat?: boolean; saveAtPoll?: number; initialDraft?: string; onWait?: (ms: number) => void; contentMatchCount?: number; contentReadFailure?: boolean; turnReadFailure?: boolean; contentCountFailure?: boolean; outermostMatchCount?: number } = {}) {
   let logicalNow = 0;
   vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   const calls: string[] = [];
@@ -32,7 +32,7 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     })()
     : opts.expandWrongText && expanded ? "mismatched synthetic content" :
     opts.collapseLong && !expanded ? (opts.foldedDifferent ? "… " : "") + lastUserText.slice(0, 10_240) : lastUserText;
-  const content = { innerText: vi.fn(async () => shownText()), locator: vi.fn((selector: string) => ({
+  const content = { innerText: vi.fn(async () => { if (opts.contentReadFailure) throw new Error("transient content read failure"); return shownText(); }), locator: vi.fn((selector: string) => ({
     count: vi.fn(async () => selector === "code:not(pre code)" && opts.renderedInline && !opts.inlineDomMissing
       ? (lastUserText.match(/`([^`\r\n]+)`/g) || []).length
       : selector === "pre code" && opts.renderedFormatted && !opts.noFormattedDOM ? 1 : 0),
@@ -44,9 +44,9 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     click: vi.fn(async () => { calls.push("expand"); expanded = true; }),
   };
   const userMessage = {
-    innerText: vi.fn(async () => shownText()), textContent: vi.fn(async () => shownText()),
-    locator: vi.fn((selector: string) => selector === ".whitespace-pre-wrap"
-      ? { count: vi.fn(async () => (opts.collapseLong || opts.renderedFormatted || opts.renderedInline) ? 1 : 0), first: vi.fn(() => content) }
+    innerText: vi.fn(async () => { if (opts.turnReadFailure) throw new Error("transient turn read failure"); return shownText(); }), textContent: vi.fn(async () => shownText()),
+    locator: vi.fn((selector: string) => selector === ".whitespace-pre-wrap" || selector === ".whitespace-pre-wrap:not(.whitespace-pre-wrap .whitespace-pre-wrap)"
+      ? { count: vi.fn(async () => { if (opts.contentCountFailure) throw new Error("content selector failed"); const raw = opts.contentMatchCount ?? ((opts.collapseLong || opts.renderedFormatted || opts.renderedInline) ? 1 : 0); return selector === ".whitespace-pre-wrap" ? raw : opts.outermostMatchCount ?? raw; }), first: vi.fn(() => content) }
       : { count: vi.fn(async () => 0) }),
     getByRole: vi.fn(() => expand),
   };
@@ -597,6 +597,73 @@ describe("ChatGPT composer compatibility", () => {
     expect(evidence.checks).toBeGreaterThan(0);
     expect(evidence.samples.length).toBeLessThanOrEqual(8);
     expect(JSON.stringify(result)).not.toContain(prompt);
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it.each([
+    { caseName: "duplicate content nodes", flags: { contentMatchCount: 2 }, count: 2, read: "ambiguous_content" },
+    { caseName: "matching content read rejected", flags: { contentMatchCount: 1, contentReadFailure: true }, count: 1, read: "read_failed" },
+    { caseName: "fallback turn read rejected", flags: { contentMatchCount: 0, turnReadFailure: true }, count: 0, read: "read_failed" },
+    { caseName: "content selector count rejected", flags: { contentCountFailure: true }, count: -1, read: "selector_failed" },
+  ])("Issue #44: diagnoses $caseName without acknowledging or replaying the first Send", async ({ flags, count, read }) => {
+    let now = 0;
+    const f = fixture({ siteBubble: true, ...flags });
+    vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+    const prompt = "PRIVATE_ISSUE44_TEST_PROMPT_NOT_IN_RECEIPT";
+    const result = await chatgptAdapter.execute("trigger", { prompt }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(result).toMatchObject({
+      status: "ambiguous", submissionState: "unknown", reason: "SEND_OUTCOME_UNKNOWN", retryable: false,
+      diagnostic: {
+        postClickReason: "message_unavailable",
+        turnEvidence: {
+          observedNewTurn: true,
+          verifiedNewTurn: false,
+          messageInspection: {
+            family: "bubble",
+            contentMatches: count,
+            readOutcome: read,
+            provisionalFirstChat: false,
+          },
+        },
+      },
+    });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain(prompt);
+  });
+
+  it("Issue #44 RED: nested content wrapper selects only one outermost complete message", async () => {
+    const f = fixture({ siteBubble: true, contentMatchCount: 2, outermostMatchCount: 1 });
+    const prompt = "SYNTHETIC_NESTED_PARENT_44";
+    const result = await chatgptAdapter.execute("trigger", { prompt }, {
+      browser: { page: f.page }, config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(result).toMatchObject({ status: "triggered", submissionState: "submitted", conversationId: ID });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it("Issue #44: two sibling content roots must remain unknown", async () => {
+    const f = fixture({ siteBubble: true, contentMatchCount: 2, outermostMatchCount: 2 });
+    let now = 0; vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+    const result = await chatgptAdapter.execute("trigger", { prompt: "SYNTHETIC_SIBLING_UNSAFE_44" }, {
+      browser: { page: f.page }, config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(result).toMatchObject({ status: "ambiguous", submissionState: "unknown", retryable: false,
+      diagnostic: { postClickReason: "message_unavailable",
+        turnEvidence: { messageInspection: { contentMatches: 2, readOutcome: "ambiguous_content" } } } });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it("Issue #44: nested content must not accept unrelated text", async () => {
+    const f = fixture({ siteBubble: true, contentMatchCount: 2, outermostMatchCount: 1, postedDifferentText: true });
+    let now = 0; vi.spyOn(Date, "now").mockImplementation(() => { now += 750; return now; });
+    const result = await chatgptAdapter.execute("trigger", { prompt: "SYNTHETIC_WRONG_NESTED_44" }, {
+      browser: { page: f.page }, config: { adapterConfig: { conversation: { newChatEachRun: true } } },
+    });
+    expect(result).toMatchObject({ status: "ambiguous", submissionState: "unknown", retryable: false,
+      diagnostic: { turnEvidence: { messageInspection: { contentMatches: 2, outermostMatches: 1, readOutcome: "read" } } } });
     expect(f.calls.filter(x => x === "send")).toHaveLength(1);
   });
 

@@ -163,6 +163,15 @@ a matching number of actual `code:not(pre code)` nodes with each inline code val
 preserved in order, and requires **full equality** between this exact presentation
 and the new User bubble. Arbitrary changes, unmatched syntax, absent code nodes,
 wrong conversation, nonempty composer, or a second User Turn cannot be accepted.
+For nested ChatGPT User content, a single User bubble may contain multiple
+`.whitespace-pre-wrap` descendants. The verifier uses a unique **outermost**
+content root and continues to require complete prompt attribution, canonical
+Conversation identity and settled composer. Multiple sibling roots or unreadable
+content remain `unknown`; a nested span is not a second User Turn. The
+privacy-safe post-click receipt distinguishes raw and outermost selector counts
+without logging message text. See
+`ISSUE44_POSTCLICK_OBSERVABILITY_20261029.md` for the real-site evidence.
+
 The ChatGPT trigger receipt retains backward-compatible `triggered` / `unavailable`
 / `ambiguous` statuses and exposes explicit `submissionState` values:
 `submitted` / `not_sent` / `unknown`, respectively. This is Browser transport
