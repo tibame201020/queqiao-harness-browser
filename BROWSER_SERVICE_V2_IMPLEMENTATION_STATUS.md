@@ -1,31 +1,23 @@
-# Browser Service V2 — Implementation Status
+# Browser Service V2 — Coordination status
 
-Date: 2026-10-27
+Updated: 2026-10-29.
 
-This branch is the coordinator's integration worktree, based on GitHub main commit `2606ef74391c50c559c4990ddd596396472c069e` (merged Harness Issue #30).
+## Document baseline (this branch)
 
-## Ownership
+- The proposed domain/API design, 11 dependency-ordered Tickets, Glossary, ADR, n8n-driven handoff and Review Gates live in docs/browser-service-v2/ (see README).
+- Machine-readable OPENAPI.yaml is a proposed **documentation contract**, not a currently implemented server.
+- The approved older architecture review in conversation is historical context only. This versioned document set does not inherit those reviewers' acceptance evidence.
+- No Browser Service code, new RED/GREEN tests, CI acceptance, HTTP runtime or E2E completion is claimed.
 
-- `feat/bsv2-001-contract` / `queqiao-bsv2-contract`: OpenAPI schema and contract tests.
-- `feat/bsv2-002-engine` / `queqiao-bsv2-engine`: Harness engine entrypoint without Queqiao Worker dependency.
-- `feat/bsv2-003-lock` / `queqiao-bsv2-lock`: common-core physical-profile lock primitives and tests.
-- `feat/bsv2-integration` / `queqiao-bsv2-integration`: coordinator review, cherry-pick/integration and full regression tests.
+## Existing isolated worktrees (created previously)
 
-## Gate
+- feat/bsv2-001-contract — queqiao-bsv2-contract (not yet delivered)
+- feat/bsv2-002-engine — queqiao-bsv2-engine (not yet delivered)
+- feat/bsv2-003-lock — queqiao-bsv2-lock (not yet delivered)
+- feat/bsv2-integration — queqiao-bsv2-integration (Coordinator documentation baseline)
 
-1. Each contributor commits a TDD change with RED and GREEN evidence.
-2. Coordinator reads every diff and verifies no browser profile, credential, prompt or private receipt enters Git.
-3. Coordinator integrates in dependency order 001 -> 002 -> 003, resolves conflicts in this branch, runs npm typecheck/test/build/package tests.
-4. No merge, tag, release or live browser dispatch until integration checks pass.
+The three implementation worktrees were originally created at 2606ef7; they must reconcile with the accepted current origin/main and this Spec commit before any coding. The Coordinator's documentation branch was independently rebased onto latest observed origin/main during the documentation pass. The repository's unrelated local main may diverge; do not reset or overwrite it.
 
-## Scope
+## Next action, not part of this delivery
 
-Browser Service is standalone HTTP/API-first and independent of Queqiao, Paperclip, Pi and n8n runtime. Harness is its initial internal backend. The current V2 HTTP send contract targets existing saved ChatGPT conversations only; unknown sends are never replayed.
-
-## Status
-
-- [x] Isolated physical worktrees created at verified `origin/main` base.
-- [ ] BSV2-001 commit/test evidence.
-- [ ] BSV2-002 commit/test evidence.
-- [ ] BSV2-003 commit/test evidence.
-- [ ] Integration review and test evidence.
+When specifically authorized, use docs/browser-service-v2/ORCHESTRATION.md with the installed Queqiao-n8n orchestration Skills to perform capability discovery and dynamically plan the **next ready Ticket**. Require real worktree commit/test/independent review evidence before expanding to more Tickets. Do not reuse historical n8n E2E topology or claim background execution was scheduled by this document.
