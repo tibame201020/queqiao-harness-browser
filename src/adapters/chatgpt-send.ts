@@ -262,6 +262,26 @@ function expectedInlineCodePresentation(source: string): { rendered: string; cod
     codeText: tokens.map((token) => token[1]),
   };
 }
+/** Read-only membership evidence: a canonical alias must appear in the original UI-selected Project. */
+async function savedConversationInOriginalProject(page: Page, projectId: string, conversationId: string): Promise<boolean> {
+  let probe: Page | null = null;
+  try {
+    probe = await page.context().newPage();
+    const landing = "https://chatgpt.com/g/" + projectId + "/project";
+    await probe.goto(landing, { waitUntil: "domcontentloaded", timeout: 10_000 });
+    if (safeUrl(probe).url !== landing) return false;
+    const links = probe.locator('main a[href*="/c/' + conversationId + '"]');
+    await links.first().waitFor({ state: "attached", timeout: 6_000 });
+    if (await links.count() !== 1) return false;
+    const href = await links.first().getAttribute("href");
+    if (!href) return false;
+    const resolved = new URL(href, "https://chatgpt.com");
+    return resolved.origin === "https://chatgpt.com" && !resolved.search && !resolved.hash
+      && /^\/g\/g-p-[A-Za-z0-9_-]{1,120}\/c\/[0-9a-f-]{36}$/i.test(resolved.pathname)
+      && conversationIdFromHref(resolved.pathname) === conversationId;
+  } catch { return false; }
+  finally { await probe?.close().catch(() => {}); }
+}
 /** Keep the same Browser Session open until this particular submitted User Turn is visible and its editor settles. */
 async function awaitPostClickSettlement(page: Page, prompt: string, started: number, initialId: string | null,
   expectedId: string | null, beforeUserTurns: { bubbles: number; legacy: number },
@@ -284,21 +304,33 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
   let lastSeenFingerprint: string | null = null;
   let expansionAttempted = false;
   let ownedProvisionalUrl: string | null = null;
+  let provisionalAliasSeen = false;
+  let membershipCheckedId: string | null = null;
   while (true) {
     const snapshot = await inspect(page, "postclick", started, initialId, expectedId);
     const currentId = safeUrl(page).id;
-    const targetValid = expectedId
+    const canonicalRoute = /^https:\/\/chatgpt\.com\/g\/(g-p-[A-Za-z0-9_-]{1,120})\/c\/([0-9a-f-]{36})$/i.exec(snapshot.state.url);
+    const canonicalProjectCandidate = !!firstChatProjectId && initialId === null && expectedId === null
+      && !!canonicalRoute && canonicalRoute[2].toLowerCase() === currentId;
+    const strictTarget = expectedId
       ? currentId === expectedId && initialId === expectedId
       : currentId !== null && (initialId === null || currentId === initialId)
         && (!firstChatProjectId || snapshot.state.url ===
           "https://chatgpt.com/g/" + firstChatProjectId + "/c/" + currentId);
+    let targetValid = strictTarget && !provisionalAliasSeen;
     // New-chat / -> /c/{id} is the expected first-Send navigation. Pre-click remains strict.
     snapshot.state.sameTarget = targetValid;
     // A provisional local UUID is never a saved Conversation ID.
     // Project preview is owned only when its ID matches the pre-click landing.
     const provisionalRoute = /^https:\/\/chatgpt\.com\/(?:g\/(g-p-[A-Za-z0-9_-]{1,120})\/)?c\/local-chatgpt%3A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.exec(snapshot.state.url);
-    const provisionalFirstChat = initialId === null && expectedId === null
-      && !!provisionalRoute && (provisionalRoute[1] ?? null) === (firstChatProjectId ?? null);
+    const provisionalFirstChat = initialId === null && expectedId === null && !!provisionalRoute
+      && (!!firstChatProjectId === !!provisionalRoute[1]);
+    if (provisionalFirstChat && firstChatProjectId && provisionalRoute[1] !== firstChatProjectId) {
+      provisionalAliasSeen = true;
+      targetValid = false;
+    }
+    const membershipRequired = canonicalProjectCandidate && (provisionalAliasSeen
+      || canonicalRoute![1] !== firstChatProjectId);
     // Current ChatGPT renders a user bubble without the former author-role attribute.
     // Select one family, never count nested old/new wrappers as two User Turns.
     const bubbles = page.locator(USER_BUBBLES);
@@ -326,7 +358,8 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     let newTurnMatches = false;
     evidence.messageInspection = undefined;
     let reason: Readiness["postClickReason"] = targetValid ? "new_turn_absent" : "target_unconfirmed";
-    if ((targetValid || provisionalFirstChat) && turnCount === priorCount + 1 && priorCount >= 0) {
+    if ((targetValid || provisionalFirstChat || canonicalProjectCandidate)
+      && turnCount === priorCount + 1 && priorCount >= 0) {
       const turn = turns.nth(turnCount - 1);
       // Prefer the actual bubble content, excluding copy/edit buttons owned by the outer turn.
       const contents = turn.locator(".whitespace-pre-wrap");
@@ -428,10 +461,20 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     if (provisionalFirstChat && newTurnMatches && editorEmpty) {
       ownedProvisionalUrl ??= snapshot.state.url;
     }
-    if (targetValid && newTurnMatches && editorEmpty) {
+    if ((targetValid || membershipRequired) && newTurnMatches && editorEmpty) {
       stableSince ??= now;
-      // A brief minimum dwell lets the site's optimistic UI settle before managed Chrome closes.
-      if (now - clickedAt >= POST_CLICK_MIN_MS && now - stableSince >= POST_CLICK_STABLE_MS) return;
+      // One owned message and an empty editor may be followed by a canonical Project-ID alias.
+      if (now - clickedAt >= POST_CLICK_MIN_MS && now - stableSince >= POST_CLICK_STABLE_MS) {
+        if (membershipRequired && currentId && firstChatProjectId) {
+          if (membershipCheckedId !== currentId) {
+            membershipCheckedId = currentId;
+            const member = await savedConversationInOriginalProject(page, firstChatProjectId, currentId);
+            if (member) return;
+          }
+          throw diagnostic("DISPATCH_AMBIGUOUS", snapshot.state);
+        }
+        return;
+      }
     } else {
       stableSince = null;
     }
@@ -439,7 +482,7 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     // Allow ONLY that already verified state to complete its 600ms stability dwell.
     // Never extend for an absent/mismatched turn, wrong target or nonempty composer.
     const provedBeforeDeadline = stableSince !== null && stableSince - clickedAt <= POST_CLICK_MAX_MS;
-    const waitingForFirstSave = ownedProvisionalUrl !== null && (targetValid
+    const waitingForFirstSave = ownedProvisionalUrl !== null && (targetValid || canonicalProjectCandidate
       || (provisionalFirstChat && snapshot.state.url === ownedProvisionalUrl));
     const deadline = waitingForFirstSave ? POST_CLICK_PENDING_SAVE_MAX_MS
       : POST_CLICK_MAX_MS + (provedBeforeDeadline ? POST_CLICK_PROVEN_GRACE_MS : 0);

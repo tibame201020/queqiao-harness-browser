@@ -1,37 +1,32 @@
-# Issue #53 — attribution-first investigation and narrow Project provisional fix
+# Issue #53 — First Project Send attribution / acceptance (2026-10-30)
 
-Date: 2026-10-30 Asia/Taipei. Owner: Browser Harness ChatGPT Site Adapter.
+## Product ownership and historical UNKNOWN
+**Browser Harness ChatGPT Site Adapter** owns post-click Project correlation, canonical URL receipts and safe read-only membership proof. Paperclip governance, n8n and Queqiao infrastructure are out of scope.
 
-## Facts, not assumed ownership
+The original SOF CEO Run reported provisional `local-chatgpt` and **0→2 bubble candidates**, with no verified canonical Conversation. Its original browser tab was unavailable for subsequent DOM inspection. The two candidates might be distinct turns or duplicate renderer nodes; **do not reinterpret, replay or declare that historical Run successful**. This historical ambiguity remains unresolved.
 
-- The original SOF first Project dispatch returned `SEND_OUTCOME_UNKNOWN` after a noncanonical `local-chatgpt` Project URL and **0 → 2** User-bubble candidates. It has no verified canonical Conversation ID. That original attempt is **not** eligible for replay or success reclassification.
-- Installed 0.5.7 already passed short first Project chat in Issue #51. An independent, **new** synthetic 8,628-character Project Send with unmodified 0.5.7 produced a provisional URL, then a canonical saved Conversation within the existing window. Its observed new-bubble count was **1** and its one Send settled. Therefore **provisional URL appearance is normal site behavior**, not evidence of a fault by itself.
-- The original failing session's browser tab was no longer open in the authorized CDP browser when read-only inspection was attempted. It was not possible to recover its exact two-bubble DOM or prove server persistence from the reported provisional UUID. The difference between **two distinct User Turns**, **duplicated DOM representation**, or **site persistence failure** remains UNKNOWN.
+## Discriminating reproduction
 
-## Confirmed Browser Harness defect (distinct from unproven two-bubble cause)
+1. Installed **0.5.7** on authenticated Chrome/CDP sent a fresh 8,628-character synthetic Project prompt. URL transitioned provisional → canonical, one User bubble, Send completed. A provisional URL is **normal site behavior** and not proof of a failure alone.
+2. Controlled RED fixture against original 0.5.7: Project-scoped provisional + exactly one owned User Turn + empty editor + canonical save after ~6.8s returned `DISPATCH_AMBIGUOUS / target_unconfirmed` at 5s. General-chat equivalent was already supported.
+3. Independently observed a *different* live false negative: pre-click validated Project landing ID differed from provisional **and** canonical Project route IDs in the **same original Browser tab**; despite one matching User turn and canonical saved Conversation, the initial candidate returned UNKNOWN. A separate **read-only** inspection of the original Project landing list found that exact canonical Conversation ID among the original Project's conversations. A saved page also contained the exact synthetic User/Assistant responses. This proves an additional **Browser Harness over-strict route-ID attribution**; it does not prove the original two-bubble SOF attempt's fate.
 
-- The existing first-Send grace recognized `/c/local-chatgpt%3A<uuid>`, but not the authenticated Project shape `/g/<project>/c/local-chatgpt%3A<uuid>`.
-- A controlled synthetic fixture preserved **one newly added exact User Turn**, an empty Composer and delayed canonical Project save (~6.8 seconds). Against the unchanged 0.5.7 implementation, the test was **RED**: exit `DISPATCH_AMBIGUOUS` at 5 seconds (`target_unconfirmed`). The existing general-chat equivalent was already GREEN.
-- The narrow fix reads a **first-party, validated pre-click Project landing identity**; a Project provisional may extend observation **only if** its embedded Project ID equals that pre-click identity and the same single-User-turn exact-text/editor-empty proof succeeds. The final canonical Conversation must also remain in that same Project. No project-ID guess, local UUID acceptance, blanket timeout extension or retry.
-- New Issue #53 tests (one positive delayed-save + six negative no-save/wrong-content/multiple-turn/nonempty-editor/wrong-Project or wrong-canonical-Project) moved from **1 RED + 5 GREEN** to **7 GREEN**. The **0 → 2 bubble case remains UNKNOWN by construction** and never produces a submitted receipt.
+## Code contract / safety
 
-## Candidate live E2E — counterevidence, merge BLOCKED
+- Only first-Send Project paths `/g/g-p-<UI-ID>/c/local-chatgpt%3A<uuid>` may enter a **bounded observation extension**, after exactly one newly observed User Turn whose *entire* content matches the intended prompt and a settled empty editor. A provisional UUID is **never** a saved Conversation ID.
+- When the canonical Project route ID differs from the validated pre-click Project ID, a distinct read-only tab navigates to the **original** first-party Project landing page and confirms exactly one first-party Project conversation link whose UUID matches the canonical saved Conversation. Close that tab after verification. Any mismatch, missing link, page error, or wrong origin remains `DISPATCH_AMBIGUOUS`; **never auto retry**.
+- The original message's unique User Turn, full source equality and empty editor remain required. Two distinct bubble candidates, wrong prompt, wrong Project membership, missing canonical URL or draft all retain UNKNOWN.
+- Successful Trigger returns the site's **actual canonical saved Project URL** (not a synthetic URL built with the pre-click Project ID); Collect must use the same ID/URL.
+- Other providers, existing Conversation/Resume and general new-chat behavior remain unchanged. No private project names/IDs, accounts, secrets, message content, CDP endpoints, or browser profiles are committed.
 
-A fresh, synthetic candidate **0.5.8** Project Trigger using a new isolated Runner profile returned `ambiguous / SEND_OUTCOME_UNKNOWN` after one Send; no retry occurred. Its post-click evidence showed **0 → 1** bubbles, empty Composer, `verifiedNewTurn=false`, `target_unconfirmed`. The final observed URL was a **canonical Project Conversation with a server UUID**, not a provisional local UUID.
+## TDD and actual E2E evidence
 
-Independent authorized read-only revisit of the **same saved canonical URL** found **one User message with exact full synthetic source**, **one Assistant with exact synthetic response marker**, and the configured Project title visible in the conversation. Therefore the synthetic Send **did persist** despite the candidate Harness returning UNKNOWN. It would be unsafe to call the candidate E2E PASS based only on that independent readback because the Runner never attributed the result.
+- RED before correction: one delayed Project-save test on old 0.5.7; one canonical alias + membership case and six canonical receipt URL tests on original candidate.
+- GREEN after correction: delayed save; safe alias + first-party membership; missing/wrong membership, mismatched source, two turns, nonempty editor, foreign origin/route/UUID and original safety cases.
+- Windows `npm run check`: **259/259 tests PASS** across 35 test files; TypeScript, build, package import, stateless runner all PASS; production `npm audit --omit=dev --audit-level=moderate`: **0 vulnerabilities**.
+- **New, isolated compiled candidate 0.5.8 synthetic Project first-Send:** `triggered/submitted` with canonical Project Conversation ID; `collect/completed` for the same ID with exact expected response marker.
+- **Independent read-only saved Conversation readback:** the saved ID is listed exactly once on the originally selected Project landing page; canonical saved route equals Trigger/Collect receipt; exactly **1 User + 1 Assistant**; full original synthetic prompt and exact response marker; Composer empty.
+- Existing historical SOF CEO Run was not retriggered; no Paperclip strategy/approval/employee E2E acceptance is claimed by this Browser Harness verification.
 
-Read-only Project-ID checks produced different matches when taken from the Projects list versus the saved Conversation sidebar; further investigation must establish whether first-party Project ID aliases, site redirect, timing or concurrent UI state caused this mismatch. No real ID or private content was logged to repository files. This observation is **not** evidence about the original two-bubble SOF Attempt, which is still UNKNOWN.
-
-**Release gate:** Do **not** Merge, install this candidate, publish, or close Issue #53. The patch is a narrow validated correctness change in a controlled fixture, but actual Project first-chat attribution is still unresolved. Next discriminating check must capture pre-click Project identity and post-click canonical ID from the **same isolated tab** with categorical/redacted diagnostics and demonstrate a single canonical same-Project receipt before changing the target rule.
-
-## Tests and acceptance evidence
-
-- Windows full `npm run check`: TypeScript, Vitest **247/247**, build, package import and stateless runner PASS. Production `npm audit --omit=dev`: 0 vulnerabilities.
-- Re-test exact merged commit in GitHub Actions before merging/deploying.
-- Run a fresh isolated, test-only Project Trigger → Collect through a compiled candidate/installed Extension and independent canonical Conversation readback. Never operate on the historical SOF CEO dispatch.
-- Status of this code change is **narrow correctness fix**; it is **not proof that the original SOF failure was a Browser Harness failure rather than ChatGPT state/persistence or a distinct two-bubble defect**. Leave Issue #53 open until the two-bubble cause and future genuine SOF Run are independently resolved.
-
-## Privacy and boundaries
-
-No credentials, Project names or IDs, conversation URLs, real prompts, personal details, CDP endpoints, cookies or provider account data may enter source/tests/docs. Nothing in Paperclip governance, n8n, Queqiao Gateway, CI Runtime or other provider adapters is changed. Preserve `unknown` on every unproven post-click attempt.
+## Publication gates
+Require exact-commit GitHub Actions PASS, reviewed PR merge, freshly built and installed Windows/WSL Extension, installed-Extension synthetic Project Trigger/Collect + independent readback, and public release status verified separately. npm Trusted Publishing permissions remain Issue #46. If any new verification fails, leave the release blocked; do not turn UNKNOWN into success.
