@@ -115,6 +115,13 @@ All ChatGPT behaviors are opt-in and independent:
 
 - `project.enabled=false` -> use normal ChatGPT, no Project required.
 - `project.enabled=true` -> `project.name` is required.
+- Project navigation follows the current authenticated first-party Projects grid
+  (`[data-projects-rows] [data-project-row]`) with legacy grid compatibility.
+  The Project new-chat preflight uniquely matches its sidebar name and validates
+  the UI-owned Project ID before opening the canonical first-party Project
+  landing route; a visible, editable Composer is mandatory before Send.
+  Missing/duplicate Projects, unsafe IDs, unexpected routes and unhydrated UI
+  fail closed without blind retry. See `ISSUE51_PROJECT_UI_ACCEPTANCE_20261029.md`.
 - `conversation.newChatEachRun=true` -> create a new chat for each trigger.
 - `conversation.newChatEachRun=false` -> `conversation.conversationId` is required and reused.
 - `harness_run({name,action:"resolve_targets",args:{urls:[...]}})` validates up to 128 Browser-connector-visible URL candidates without reading conversation content, opening a Browser Session, navigating a page or mutating Runner state. It returns up to 16 canonical `{conversationId,conversationUrl}` records, or `unresolved` if there are no candidates, too many, or conflicting identities. Keep returned URLs private; callers must not interpret the ChatGPT URL grammar.

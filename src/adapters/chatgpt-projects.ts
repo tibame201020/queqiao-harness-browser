@@ -55,48 +55,142 @@ export function advanceProjectScan(
   return { hydrated, lastCount: projectCount, stablePasses, done: hydrated && stablePasses >= 2 };
 }
 
+const MODERN_PROJECT_ROWS = 'main [data-projects-rows] [data-project-row]';
+const LEGACY_PROJECT_ROWS = 'main [role="row"]';
+const PROJECT_ID_PATTERN = /^g-p-[A-Za-z0-9_-]{1,120}$/;
+const PROJECT_EDITOR = '#prompt-textarea:visible, [contenteditable="true"][role="textbox"]:visible';
+
+async function modernProjectRowName(row: ReturnType<Page["locator"]>): Promise<string> {
+  const spans = row.locator("span");
+  const texts: string[] = [];
+  for (let i = 0; i < await spans.count(); i++) {
+    const value = (await spans.nth(i).innerText()).trim();
+    if (value) texts.push(value);
+  }
+  // Current UI: empty icon span + a single readable Project name span.
+  // Multiple text candidates fail closed rather than guessing.
+  if (texts.length !== 1) throw new Error("PROJECTS_UI_AMBIGUOUS_ROW");
+  return texts[0];
+}
+
+function checkedProjectId(raw: string | null, projectName: string): string {
+  if (!raw) throw new Error("Project id missing in sidebar: " + projectName);
+  if (!PROJECT_ID_PATTERN.test(raw)) throw new Error("Invalid UI Project id");
+  return raw;
+}
+
+async function requireCanonicalProjectLanding(page: Page, projectId: string): Promise<void> {
+  const expectedPath = "/g/" + projectId + "/project";
+  const verify = () => {
+    let url: URL;
+    try { url = new URL(page.url()); } catch { throw new Error("Unexpected Project route"); }
+    if (url.origin !== "https://chatgpt.com" || url.pathname !== expectedPath || url.search || url.hash) {
+      throw new Error("Unexpected Project origin or route");
+    }
+  };
+  verify();
+  const editor = page.locator(PROJECT_EDITOR);
+  try { await editor.first().waitFor({ state: "visible", timeout: 15_000 }); }
+  catch { throw new Error("Project Composer unavailable"); }
+  verify();
+  if (await editor.count() !== 1 || !await editor.first().isEditable()) {
+    throw new Error("Project Composer is not uniquely visible and editable");
+  }
+  verify();
+}
+
+async function navigateProjectLanding(page: Page, projectId: string): Promise<void> {
+  await page.goto("https://chatgpt.com/g/" + projectId + "/project", {
+    waitUntil: "domcontentloaded", timeout: 30_000,
+  });
+  const failure = await pageFailure(page);
+  if (failure) throw new Error(failure);
+  await requireCanonicalProjectLanding(page, projectId);
+}
+
+async function exactSidebarProjectId(page: Page, projectName: string): Promise<string> {
+  const rows = page.locator("[data-app-action-sidebar-project-row]");
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const labels: (string | null)[] = [];
+    for (let i = 0; i < await rows.count(); i++) {
+      labels.push(await rows.nth(i).getAttribute("data-app-action-sidebar-project-label"));
+    }
+    const index = resolveProjectRowIndex(labels, projectName);
+    if (index !== null) {
+      return checkedProjectId(await rows.nth(index).getAttribute("data-app-action-sidebar-project-id"), projectName);
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error("Project not found in sidebar: " + projectName);
+}
+
 export async function listProjects(page: Page): Promise<string[]> {
   await ensureProjectsPage(page);
   const names = new Set<string>();
   let state: ProjectScanState = { hydrated: false, lastCount: -1, stablePasses: 0, done: false };
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    const rows = page.locator('main [role="row"]');
-    const rowCount = await rows.count();
-    for (let i = 0; i < rowCount; i++) {
-      const cells = rows.nth(i).locator('[role="gridcell"]');
-      if (!await cells.count()) continue;
-      const name = rowName(await cells.first().innerText());
-      if (name && !["\u540d\u7a31", "\u4fee\u6539\u6642\u9593", "Name", "Modified"].includes(name)) names.add(name);
+    const modern = page.locator(MODERN_PROJECT_ROWS);
+    const legacy = page.locator(LEGACY_PROJECT_ROWS);
+    const modernCount = await modern.count();
+    const oldCount = await legacy.count();
+    if (modernCount > 0) {
+      for (let i = 0; i < modernCount; i++) names.add(await modernProjectRowName(modern.nth(i)));
+    } else {
+      for (let i = 0; i < oldCount; i++) {
+        const cells = legacy.nth(i).locator('[role="gridcell"]');
+        if (!await cells.count()) continue;
+        const name = rowName(await cells.first().innerText());
+        if (name && !["名稱", "修改時間", "Name", "Modified"].includes(name)) names.add(name);
+      }
     }
-    state = advanceProjectScan(state, names.size, rowCount);
-    if (state.done) break;
+    state = advanceProjectScan(state, names.size, modernCount > 0 ? modernCount + 1 : oldCount);
+    if (state.done) return [...names];
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await page.waitForTimeout(250);
   }
-  return [...names];
+  throw new Error("ChatGPT Projects UI not ready or not hydrated");
 }
 
 export async function openProject(page: Page, projectName: string): Promise<void> {
   await ensureProjectsPage(page);
-  await page.locator('main [role="row"]').first().waitFor({ state: "attached", timeout: 20_000 });
+  const modern = page.locator(MODERN_PROJECT_ROWS);
+  const old = page.locator(LEGACY_PROJECT_ROWS);
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    const rows = page.locator('main [role="row"]');
-    const matches: number[] = [];
-    for (let i = 0; i < await rows.count(); i++) {
-      const cells = rows.nth(i).locator('[role="gridcell"]');
-      if (await cells.count() && rowName(await cells.first().innerText()) === projectName) matches.push(i);
-    }
-    if (matches.length > 1) throw new Error(`Project name is ambiguous: ${projectName}`);
-    if (matches.length === 1) {
-      await rows.nth(matches[0]).locator('[role="gridcell"]').first().click();
-      await page.waitForURL(/\/g\/g-p-[^/]+\/project(?:$|[?#])/, { timeout: 20_000 });
-      return;
+    const modernCount = await modern.count();
+    if (modernCount > 0) {
+      const matches: number[] = [];
+      for (let i = 0; i < modernCount; i++) {
+        if (await modernProjectRowName(modern.nth(i)) === projectName) matches.push(i);
+      }
+      if (matches.length > 1) throw new Error("Project name is ambiguous: " + projectName);
+      if (matches.length === 1) {
+        const projectId = await exactSidebarProjectId(page, projectName);
+        await navigateProjectLanding(page, projectId);
+        return;
+      }
+    } else {
+      const matches: number[] = [];
+      for (let i = 0; i < await old.count(); i++) {
+        const cells = old.nth(i).locator('[role="gridcell"]');
+        if (await cells.count() && rowName(await cells.first().innerText()) === projectName) matches.push(i);
+      }
+      if (matches.length > 1) throw new Error("Project name is ambiguous: " + projectName);
+      if (matches.length === 1) {
+        await old.nth(matches[0]).locator('[role="gridcell"]').first().click();
+        await page.waitForURL(/\/g\/g-p-[A-Za-z0-9_-]{1,120}\/project(?:$|[?#])/, { timeout: 20_000 });
+        const url = new URL(page.url());
+        if (url.origin !== "https://chatgpt.com" || !/^\/g\/g-p-[A-Za-z0-9_-]{1,120}\/project$/.test(url.pathname)) {
+          throw new Error("Unexpected Project origin or route");
+        }
+        return;
+      }
     }
     await page.waitForTimeout(250);
   }
-  throw new Error(`Project not found: ${projectName}`);
+  throw new Error("Project not found: " + projectName);
 }
 
 export async function openConversation(page: Page, conversationId: string, projectScoped: boolean): Promise<void> {
@@ -131,34 +225,9 @@ export function projectConversationUrl(projectId: string, conversationId: string
 
 export async function startProjectNewConversation(page: Page, projectName: string): Promise<{ projectId: string }> {
   await ensureProjectsPage(page);
-  const rows = page.locator('[data-app-action-sidebar-project-row]');
-  const deadline = Date.now() + 10_000;
-  let rowIndex: number | null = null;
-  while (Date.now() < deadline) {
-    const labels: (string | null)[] = [];
-    for (let i = 0; i < await rows.count(); i++) {
-      labels.push(await rows.nth(i).getAttribute("data-app-action-sidebar-project-label"));
-    }
-    rowIndex = resolveProjectRowIndex(labels, projectName);
-    if (rowIndex !== null) break;
-    await page.waitForTimeout(250);
-  }
-  if (rowIndex === null) throw new Error(`Project not found in sidebar: ${projectName}`);
-
-  const row = rows.nth(rowIndex);
-  const projectId = await row.getAttribute("data-app-action-sidebar-project-id");
-  if (!projectId) throw new Error(`Project id missing in sidebar: ${projectName}`);
-  const buttons = row.locator("button");
-  for (let i = 0; i < await buttons.count(); i++) {
-    const button = buttons.nth(i);
-    const label = await button.getAttribute("aria-label");
-    if (isProjectNewChatButtonLabel(label, projectName)) {
-      await button.click();
-      await page.locator('#prompt-textarea, [contenteditable="true"][role="textbox"]').first().waitFor({ state: "visible", timeout: 5_000 });
-      return { projectId };
-    }
-  }
-  throw new Error(`Project new-chat action not found: ${projectName}`);
+  const projectId = await exactSidebarProjectId(page, projectName);
+  await navigateProjectLanding(page, projectId);
+  return { projectId };
 }
 
 export async function pinnedConversationIds(page: Page): Promise<Set<string>> {
