@@ -1,43 +1,47 @@
-# Issue #44 — ChatGPT first-send post-click observability (2026-10-29)
+# Issue #44 — nested ChatGPT User content verification (2026-10-29)
 
-## Scope and status
+## Scope and ownership
 
-Browser Harness ChatGPT Site Adapter only: `src/adapters/chatgpt-send.ts` and its synthetic regression tests.
-This change is **diagnostics only**. It does **not** establish the field root cause, change Send classification, extend wait windows, auto-retry, or establish Hosted E2E acceptance.
+**Owner:** Browser Harness ChatGPT Site Adapter post-click verifier. No Gateway/Worker, n8n workflow, CI Runtime, OAuth, Paperclip, login/session, or scheduler modifications.
 
-Field report: first new-chat Send returned `SEND_OUTCOME_UNKNOWN`, `observedNewTurn=true`, `verifiedNewTurn=false`, `postClickReason=message_unavailable`. The prior aggregated receipt did not identify the content selector match count or the text getter outcome.
+The initial real field failure, n8n research Execution #37, returned `SEND_OUTCOME_UNKNOWN`, `postClickReason=message_unavailable`, `observedNewTurn=true`, `verifiedNewTurn=false`, and a post-click diagnostic elapsed time of approximately 7.4 seconds. This never established Send loss or provider throttling.
 
-## Added non-content evidence
+## Evidence-based root cause
 
-When exactly one new candidate User Turn is observed in the accepted target/provisional first-chat path, `turnEvidence.messageInspection` reports:
+A read-only lookup of the original task's n8n Workflow identified its original Browser Harness Profile. That Profile still held the original `ambiguous/unknown` receipt and a saved canonical Conversation ID. No historical Send was retried and the original ambiguity lock was not cleared.
 
-| Field | Allowed values | Meaning |
-| --- | --- | --- |
-| `family` | `bubble`, `legacy` | Which User Turn selector family was used |
-| `contentMatches` | `-1`, `0`, `1`, `>1` | Number of `.whitespace-pre-wrap` candidates; `-1` means selector count failed |
-| `readOutcome` | `read`, `read_failed`, `ambiguous_content`, `selector_failed` | Readable string, text getter failure, multiple matching descendants, or selector failure |
-| `provisionalFirstChat` | boolean | Whether a first-chat local ID was being observed (not a saved canonical conversation) |
+A new **read-only Chrome tab** reopened that exact original Conversation, with the previously authorized CDP browser. After hydration it showed:
 
-These fields do not include prompt text, rendered text, DOM, cookies, profile details, or conversation identifiers. They are current-sample observations and not sufficient on their own to prove attribution. Existing conservative Send semantics remain authoritative: one owned click, prompt ownership, canonical target, settled composer, and a uniquely attributable User Turn. An unproven Send remains `unknown` without auto-resend.
+- Exactly **1 User Turn** and **1 Assistant Turn**, valid saved Conversation identity and a visible composer.
+- The new User bubble contained **two** `.whitespace-pre-wrap` descendants: an **outer DIV** containing the message (1,721 rendered characters), and a **nested SPAN** (2 characters). The nested span is part of the outer message, not a second User Turn.
+- The pre-fix source mapped `count > 1` to `message = null`; even with the visible new User Turn it could not read message text, leading to `message_unavailable`. The persistent original DOM shape reproduces this verifier failure path. We cannot reconstruct the precise historical DOM timestamp, so do not infer unrelated timing or rate-limiting causes.
 
-## TDD and safe next evidence
+This is an actual Browser Harness selector multiplicity bug. It does not prove the original User prompt matched the displayed message or retroactively change that original `UNKNOWN` receipt.
 
-The new synthetic tests initially failed 4/4 (RED) because `messageInspection` was absent; the diagnostics-only implementation then passed those same 4/4 (GREEN). The tests cover multiple content matches, failure to read the single content, failure to read the fallback turn, and failure to count content candidates. They assert one real Send attempt, `unknown`, non-retryability, and no prompt leak.
+## Narrow fix
 
-## New isolated authenticated browser observations (2026-10-29)
+When multiple `.whitespace-pre-wrap` elements exist **within exactly one candidate new User Turn**, inspect only **outermost** candidates with:
 
-A candidate **compiled runner from this PR**, using an isolated private Harness home and the already authorized dedicated CDP browser, ran new original noncommercial synthetic ChatGPT tests. This is **not** a claim that the candidate has been installed as the production Worker Extension.
+`.whitespace-pre-wrap:not(.whitespace-pre-wrap .whitespace-pre-wrap)`
 
-- Original A: one new-chat Trigger returned `triggered/submitted` with saved canonical conversation identity. Independent `collect` returned `completed` and its exact synthetic marker. Separate read-only Chrome-tab reopening showed exactly **1 User Turn**, **1 Assistant Turn**, one `.whitespace-pre-wrap` content match, readable and exact original User source, and empty composer. An immediate independent assistant read before hydration did not match; a subsequent read-only poll after 4 seconds confirmed the **exact** assistant marker. No second Send occurred.
-- Original B: a distinct first-new-chat Markdown/code/table fixture returned `ambiguous/unknown` with `postClickReason=expanded_text_mismatch`; it **did not reproduce** the Issue #44 `message_unavailable` branch. Diagnostic classification: `observedNewTurn=true`, `verifiedNewTurn=false`, `contentMatches=1`, `readOutcome=read`, non-provisional canonical URL and empty composer. Independent read-only reopening confirmed **1 User + 1 Assistant** turn and the expected Assistant marker, but the displayed User text was **20 characters shorter** than the verified input and failed raw and whitespace-normalized equality. The case therefore remains conservatively `UNKNOWN`, retains its private ambiguity lock, and was never replayed.
-- One earlier attempt in the isolated environment failed **before** dispatch at `PRE_SEND_NOT_READY/composer_click_failed`. The separate read-only page-load check observed a briefly missing editor before it appeared at around 1.5 seconds. No evidence links this pre-click failure to Issue #44's post-click `message_unavailable` symptom.
+Proceed only if there is **exactly one** outermost message root. A zero-content case still falls back to its original User Turn, and a unique raw match still uses that match. Two sibling roots, failed selectors, unreadable text, mismatched content, noncanonical target, nonempty editor, duplicate new turns or unproven persistence remain `unknown`.
 
-These tests demonstrate the new diagnostic build's existing Send/Collect behavior and conservative ambiguity contract. They **do not establish the original field root cause** or close Issue #44. No source prompts, conversation URLs/IDs, cookies or CDP endpoints are published to this repository; the test-only runtime stays outside Git.
+Existing exact/controlled text ownership proof, minimum/stability dwell, single real click, and `submitted/not_sent/unknown` contract are unchanged. No retry, timeout widening, fuzzy equality, additional scheduling, or adjacent-project change.
 
-## Outstanding acceptance and release boundary
+Privacy-safe diagnostic `turnEvidence.messageInspection` now distinguishes `family`, raw `contentMatches`, `outermostMatches`, categorical `readOutcome`, and provisional-vs-saved first-chat state. It contains no raw prompts, rendered text, DOM, cookies, Profile secrets, Conversation IDs or URLs.
 
-To identify the original `message_unavailable` root cause, obtain a **fresh, authorized, non-replayed** field occurrence running the diagnostic build, preserving `messageInspection`, before/after counts, correct-target boolean, editor settlement and elapsed time. Different `expanded_text_mismatch` or pre-click errors must remain separate.
+## TDD and authenticated acceptance
 
-If selector ambiguity is proven, reproduce that exact DOM shape RED and address it without accepting unrelated text. If `innerText` failure is proven, reproduce transient vs persistent failure and retain fail-closed `unknown` when attribution cannot be proven. Before any behavioral fix or Issue closure: fresh CI and independent original Trigger/Collect readback. Observability-only merge is independent from declaring a field root cause or publishing a bug-fix release.
+- **RED:** targeted nested-content regression failed on previous verifier (`ambiguous/unknown` rather than `submitted`). **GREEN:** the same test passed with unique outermost selection. Sibling-root and wrong-text negative cases still return `unknown` without extra Send. Earlier 4 diagnostic RED→GREEN cases remain covered.
+- Full local `npm run check` on updated source: **226/226 tests**, 34 test files, TypeScript typecheck, build, package import and stateless runner checks passed. Versioned release and final CI must still be verified on exact published commit.
+- **Original failed Conversation (read-only):** the candidate verifier observed 2 raw matches, 1 unique outermost root, `readOutcome=read`, and returned verified **when the displayed message was supplied as test input**. This proves structural selection and settled ownership logic without any Send. It is **not** proof of equality against the original unpersisted first-chat prompt; the original attempt remains `UNKNOWN`.
+- **New original A (pre-fix diagnostic candidate):** authenticated first-chat `triggered/submitted`; `collect/completed` with exact marker; independent readback confirmed 1 User and 1 Assistant, complete prompt, marker and empty composer after hydration.
+- **New original B (distinct Markdown/code):** `ambiguous/unknown`, `expanded_text_mismatch` with one readable content root. Read-only readback showed 1 User and 1 Assistant, but rendered content differed from source by 20 characters; it remains locked, was not resent, and is **not** the Issue #44 `message_unavailable` case.
+- **New original C (fixed candidate):** authenticated new-chat `triggered/submitted` with saved canonical identity and independent `collect/completed` with exact marker. Separate read-only reopened tab confirmed **1 User + 1 Assistant**, exact full original User prompt, exact Assistant marker and empty composer; no duplicate Send.
+- A separate transient pre-click `composer_click_failed/not_sent` occurred during site hydration. This is a distinct pre-dispatch event and is not relabeled as Issue #44.
 
-No changes to Queqiao, n8n, CI Ephemeral Runtime, credentials, OAuth, or scheduling.
+## Remaining acceptance / rollout
+
+Require fresh exact-HEAD GitHub Actions, production dependency audit, immutable `v0.5.6` release identity, successful npm publish and local installed-extension acceptance before declaring shipped. Use a new original (not an existing `UNKNOWN`) for installed Trigger→Collect if a hosted smoke is needed. Keep all historical unresolved `UNKNOWN` locks; never replay them.
+
+Test-only browser state and original IDs remain in the private local runtime, outside Git. No sensitive data is committed.
