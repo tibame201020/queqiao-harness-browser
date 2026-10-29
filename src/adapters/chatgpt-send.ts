@@ -36,6 +36,13 @@ type PostClickTurnEvidence = {
   verifiedNewTurn: boolean;
   sameCountLastMatchesOriginal: boolean;
   sameCountLastChanged: boolean;
+  // Count and categorical outcome only; no message content or DOM in diagnostics.
+  messageInspection?: {
+    family: "bubble" | "legacy";
+    contentMatches: number;
+    readOutcome: "read" | "read_failed" | "ambiguous_content" | "selector_failed";
+    provisionalFirstChat: boolean;
+  };
   samples: { bubbles: number; legacy: number; correctTarget: boolean; editorEmpty: boolean; generationActive: boolean }[];
 };
 
@@ -311,6 +318,7 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       }
     }
     let newTurnMatches = false;
+    evidence.messageInspection = undefined;
     let reason: Readiness["postClickReason"] = targetValid ? "new_turn_absent" : "target_unconfirmed";
     if ((targetValid || provisionalFirstChat) && turnCount === priorCount + 1 && priorCount >= 0) {
       const turn = turns.nth(turnCount - 1);
@@ -319,6 +327,13 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       const count = await contents.count().catch(() => -1);
       const message = count === 1 ? contents.first() : count === 0 ? turn : null;
       const observed = message ? await message.innerText({ timeout: 500 }).catch(() => null) : null;
+      evidence.messageInspection = {
+        family: useBubbles ? "bubble" : "legacy",
+        contentMatches: count,
+        readOutcome: count < 0 ? "selector_failed" : count > 1 ? "ambiguous_content"
+          : typeof observed === "string" ? "read" : "read_failed",
+        provisionalFirstChat,
+      };
       reason = typeof observed === "string" ? "full_text_mismatch" : "message_unavailable";
       const hasFormattedCode = !!message && await message.locator("pre code").count().catch(() => 0) > 0;
       const inlineSource = expectedInlineCodePresentation(prompt);
