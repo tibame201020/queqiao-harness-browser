@@ -24,6 +24,20 @@ These fields do not include prompt text, rendered text, DOM, cookies, profile de
 
 The new synthetic tests initially failed 4/4 (RED) because `messageInspection` was absent; the diagnostics-only implementation then passed those same 4/4 (GREEN). The tests cover multiple content matches, failure to read the single content, failure to read the fallback turn, and failure to count content candidates. They assert one real Send attempt, `unknown`, non-retryability, and no prompt leak.
 
-Next, on a **new separately authorized first-chat Trigger** with this build installed, capture only the categorical `messageInspection`, candidate before/after counts, composer settlement, canonical ownership boolean, and bounded elapsed time. Correlate the receipt with independent Collect. If the target is not saved or attribution remains unproven, retain `UNKNOWN`; do not repeat the Send. Use this evidence to identify the actual root cause before proposing a behavior change.
+## New isolated authenticated browser observations (2026-10-29)
+
+A candidate **compiled runner from this PR**, using an isolated private Harness home and the already authorized dedicated CDP browser, ran new original noncommercial synthetic ChatGPT tests. This is **not** a claim that the candidate has been installed as the production Worker Extension.
+
+- Original A: one new-chat Trigger returned `triggered/submitted` with saved canonical conversation identity. Independent `collect` returned `completed` and its exact synthetic marker. Separate read-only Chrome-tab reopening showed exactly **1 User Turn**, **1 Assistant Turn**, one `.whitespace-pre-wrap` content match, readable and exact original User source, and empty composer. An immediate independent assistant read before hydration did not match; a subsequent read-only poll after 4 seconds confirmed the **exact** assistant marker. No second Send occurred.
+- Original B: a distinct first-new-chat Markdown/code/table fixture returned `ambiguous/unknown` with `postClickReason=expanded_text_mismatch`; it **did not reproduce** the Issue #44 `message_unavailable` branch. Diagnostic classification: `observedNewTurn=true`, `verifiedNewTurn=false`, `contentMatches=1`, `readOutcome=read`, non-provisional canonical URL and empty composer. Independent read-only reopening confirmed **1 User + 1 Assistant** turn and the expected Assistant marker, but the displayed User text was **20 characters shorter** than the verified input and failed raw and whitespace-normalized equality. The case therefore remains conservatively `UNKNOWN`, retains its private ambiguity lock, and was never replayed.
+- One earlier attempt in the isolated environment failed **before** dispatch at `PRE_SEND_NOT_READY/composer_click_failed`. The separate read-only page-load check observed a briefly missing editor before it appeared at around 1.5 seconds. No evidence links this pre-click failure to Issue #44's post-click `message_unavailable` symptom.
+
+These tests demonstrate the new diagnostic build's existing Send/Collect behavior and conservative ambiguity contract. They **do not establish the original field root cause** or close Issue #44. No source prompts, conversation URLs/IDs, cookies or CDP endpoints are published to this repository; the test-only runtime stays outside Git.
+
+## Outstanding acceptance and release boundary
+
+To identify the original `message_unavailable` root cause, obtain a **fresh, authorized, non-replayed** field occurrence running the diagnostic build, preserving `messageInspection`, before/after counts, correct-target boolean, editor settlement and elapsed time. Different `expanded_text_mismatch` or pre-click errors must remain separate.
+
+If selector ambiguity is proven, reproduce that exact DOM shape RED and address it without accepting unrelated text. If `innerText` failure is proven, reproduce transient vs persistent failure and retain fail-closed `unknown` when attribution cannot be proven. Before any behavioral fix or Issue closure: fresh CI and independent original Trigger/Collect readback. Observability-only merge is independent from declaring a field root cause or publishing a bug-fix release.
 
 No changes to Queqiao, n8n, CI Ephemeral Runtime, credentials, OAuth, or scheduling.
