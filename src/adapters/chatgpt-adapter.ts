@@ -8,7 +8,7 @@ import {
   initialAssistantCollectState,
 } from "./chatgpt.js";
 import { ChatGptSendError, isChatGptGenerationActive, postClickAmbiguity, reconcileChatGptSend, sendChatGptPrompt } from "./chatgpt-send.js";
-import { deleteConversation, listProjectConversations, listProjects, openConversation, openProject, projectConversationUrl, startProjectNewConversation } from "./chatgpt-projects.js";
+import { deleteConversation, listProjectConversations, listProjects, openConversation, openProject, startProjectNewConversation } from "./chatgpt-projects.js";
 
 const conversationIdSchema = z.string().uuid();
 
@@ -221,6 +221,11 @@ async function prepareTriggerTarget(session: BrowserSession, cfg: ChatGptAdapter
   return {};
 }
 
+export function firstChatProjectReceiptUrl(raw: string, conversationId: string): string | null {
+  const match = /^https:\/\/chatgpt\.com\/g\/g-p-[A-Za-z0-9_-]{1,120}\/c\/([0-9a-f-]{36})$/i.exec(raw);
+  return match?.[1].toLowerCase() === conversationId ? raw : null;
+}
+
 async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>,
   beforeSend?: (prompt: string, input: { conversationId: string | null; baseline: { bubbles: number; legacy: number } }) => Promise<void>) {
   cfg = selectChatGptTriggerConfig(cfg, args);
@@ -257,7 +262,10 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
   if (runtimeTargetUrl && transientUrl !== runtimeTargetUrl) return notConfirmed();
   const conversationId = conversationIdFromHref(transientUrl);
   if (!conversationId || (!cfg.conversation.newChatEachRun && conversationId !== cfg.conversation.conversationId)) return notConfirmed();
-  const url = target.projectId ? projectConversationUrl(target.projectId, conversationId) : transientUrl;
+  // Project alias success is proven in sendChatGptPrompt by exact Turn and read-only membership.
+  // Return the saved canonical route observed by the site, not a synthetic pre-click Project route.
+  const url = target.projectId ? firstChatProjectReceiptUrl(transientUrl, conversationId) : transientUrl;
+  if (!url) return notConfirmed();
   return { status: "triggered", submissionState: "submitted", url, conversationId };
 }
 
