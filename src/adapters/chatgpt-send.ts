@@ -36,6 +36,13 @@ type PostClickTurnEvidence = {
   verifiedNewTurn: boolean;
   sameCountLastMatchesOriginal: boolean;
   sameCountLastChanged: boolean;
+  hydration: {
+    canonicalCandidateSeen: boolean;
+    transientMultipleObserved: boolean;
+    emptyAfterMultipleObserved: boolean;
+    savedUniqueTurnVerified: boolean;
+    extendedObservation: boolean;
+  };
   folded: {
     previewCorrelated: boolean;
     expandControlMax: number;
@@ -291,6 +298,31 @@ async function savedConversationInOriginalProject(page: Page, projectId: string,
   } catch { return false; }
   finally { await probe?.close().catch(() => {}); }
 }
+/** After transient 2+ User bubbles, verify the saved server-rendered Conversation in a distinct read-only tab. */
+async function verifyUniqueSavedProjectTurn(page: Page, canonicalUrl: string, prompt: string): Promise<boolean> {
+  if (!/^https:\/\/chatgpt\.com\/g\/g-p-[A-Za-z0-9_-]{1,120}\/c\/[0-9a-f-]{36}$/i.test(canonicalUrl)) return false;
+  let probe: Page | null = null;
+  try {
+    probe = await page.context().newPage();
+    await probe.goto(canonicalUrl, { waitUntil: "domcontentloaded", timeout: 10_000 });
+    if (safeUrl(probe).url !== canonicalUrl) return false;
+    const users = probe.locator(USER_BUBBLES);
+    await users.first().waitFor({ state: "attached", timeout: 6_000 });
+    const verified = async (): Promise<boolean> => {
+      if (await users.count() !== 1) return false;
+      const turn = users.first();
+      const roots = turn.locator(".whitespace-pre-wrap:not(.whitespace-pre-wrap .whitespace-pre-wrap)");
+      if (await roots.count() !== 1) return false;
+      const full = await roots.first().innerText({ timeout: 1_000 }).catch(() => null);
+      return typeof full === "string" && sameSubmittedText(full, prompt);
+    };
+    if (!await verified()) return false;
+    await probe.waitForTimeout(600);
+    return await verified(); // Reject a late second persisted User Turn.
+  } catch { return false; }
+  finally { await probe?.close().catch(() => {}); }
+}
+
 /** Keep the same Browser Session open until this particular submitted User Turn is visible and its editor settles. */
 async function awaitPostClickSettlement(page: Page, prompt: string, started: number, initialId: string | null,
   expectedId: string | null, beforeUserTurns: { bubbles: number; legacy: number },
@@ -306,6 +338,10 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     verifiedNewTurn: false,
     sameCountLastMatchesOriginal: false,
     sameCountLastChanged: false,
+    hydration: {
+      canonicalCandidateSeen: false, transientMultipleObserved: false,
+      emptyAfterMultipleObserved: false, savedUniqueTurnVerified: false, extendedObservation: false,
+    },
     folded: {
       previewCorrelated: false, expandControlMax: 0, expandAttempts: 0,
       expandClickSucceeded: false, expandedFullTextMatched: false,
@@ -324,6 +360,8 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
   let ownedProvisionalUrl: string | null = null;
   let provisionalAliasSeen = false;
   let membershipCheckedId: string | null = null;
+  let transientMultipleObserved = false;
+  let emptyAfterMultipleObserved = false;
   while (true) {
     const snapshot = await inspect(page, "postclick", started, initialId, expectedId);
     const currentId = safeUrl(page).id;
@@ -347,8 +385,6 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
       provisionalAliasSeen = true;
       targetValid = false;
     }
-    const membershipRequired = canonicalProjectCandidate && (provisionalAliasSeen
-      || canonicalRoute![1] !== firstChatProjectId);
     // Current ChatGPT renders a user bubble without the former author-role attribute.
     // Select one family, never count nested old/new wrappers as two User Turns.
     const bubbles = page.locator(USER_BUBBLES);
@@ -358,6 +394,11 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     const legacyCount = await page.locator(LEGACY_USER_TURNS).count().catch(() => -1);
     const turnCount = useBubbles ? bubbleCount : legacyCount;
     const priorCount = useBubbles ? beforeUserTurns.bubbles : beforeUserTurns.legacy;
+    if (firstChatProjectId && initialId === null && expectedId === null && priorCount === 0
+      && turnCount > 1 && (canonicalProjectCandidate || provisionalFirstChat)) transientMultipleObserved = true;
+    if (transientMultipleObserved && turnCount === 0) emptyAfterMultipleObserved = true;
+    const membershipRequired = canonicalProjectCandidate && (provisionalAliasSeen
+      || canonicalRoute![1] !== firstChatProjectId || transientMultipleObserved);
     // Count-preserving churn is evidence of ambiguity, never submission proof.
     // Fingerprints use an ephemeral private HMAC key and never enter receipts.
     if (fingerprintKey && targetValid && priorCount > 0 && turnCount === priorCount && evidence.checks % 4 === 0) {
@@ -471,6 +512,11 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     }
     evidence.observedNewTurn ||= priorCount >= 0 && turnCount === priorCount + 1;
     evidence.verifiedNewTurn ||= newTurnMatches;
+    evidence.hydration = {
+      ...evidence.hydration,
+      canonicalCandidateSeen: evidence.hydration.canonicalCandidateSeen || canonicalProjectCandidate,
+      transientMultipleObserved, emptyAfterMultipleObserved,
+    };
     evidence.folded = {
       previewCorrelated: foldedCandidateObserved,
       expandControlMax: maxExpandControls,
@@ -511,7 +557,14 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
             membershipCheckedId = currentId;
             const member = await savedConversationInOriginalProject(page, firstChatProjectId, currentId);
             evidence.folded.originalProjectMembership = member ? "confirmed" : "rejected";
-            if (member) return;
+            if (member) {
+              // A transient multi-bubble React remount is not evidence of two saved Turns,
+              // but it requires independent saved-conversation content/uniqueness proof.
+              if (!transientMultipleObserved || await verifyUniqueSavedProjectTurn(page, snapshot.state.url, prompt)) {
+                evidence.hydration.savedUniqueTurnVerified = transientMultipleObserved;
+                return;
+              }
+            }
           }
           throw diagnostic("DISPATCH_AMBIGUOUS", snapshot.state);
         }
@@ -529,7 +582,12 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     const foldedObservation = !!firstChatProjectId && foldedCandidateObserved
       && turnCount === priorCount + 1 && editorEmpty
       && (targetValid || provisionalFirstChat || canonicalProjectCandidate);
-    const deadline = waitingForFirstSave || foldedObservation ? POST_CLICK_PENDING_SAVE_MAX_MS
+    const canonicalHydrationObservation = canonicalProjectCandidate && priorCount === 0 && editorEmpty;
+    // A canonical first-party Project URL is a *reason to observe*, never proof of Send.
+    // Hydration can remount 0→2→0→1 while retaining a saved canonical ID.
+    evidence.hydration.extendedObservation ||= canonicalHydrationObservation;
+    const deadline = waitingForFirstSave || foldedObservation || canonicalHydrationObservation
+      ? POST_CLICK_PENDING_SAVE_MAX_MS
       : POST_CLICK_MAX_MS + (provedBeforeDeadline ? POST_CLICK_PROVEN_GRACE_MS : 0);
     if (now - clickedAt >= deadline) throw diagnostic("DISPATCH_AMBIGUOUS", snapshot.state);
     await page.waitForTimeout(200);

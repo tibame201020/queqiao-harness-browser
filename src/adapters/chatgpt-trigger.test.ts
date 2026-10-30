@@ -4,7 +4,7 @@ import { sendChatGptPrompt } from "./chatgpt-send.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; expandClickFailsOnce?: boolean; refoldOnSave?: boolean; lateShowMoreAtPoll?: number; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean; renderedInline?: boolean; inlineMutate?: boolean; inlineDomMissing?: boolean; inlineCodeMutate?: boolean; wrongOrigin?: boolean; wrongResumeId?: boolean; pendingFirstChat?: boolean; saveAtPoll?: number; projectFirstChat?: boolean; wrongProject?: boolean; wrongCanonicalProject?: boolean; projectAlias?: boolean; memberFound?: boolean; memberWrongId?: boolean; initialDraft?: string; onWait?: (ms: number) => void; contentMatchCount?: number; contentReadFailure?: boolean; turnReadFailure?: boolean; contentCountFailure?: boolean; outermostMatchCount?: number } = {}) {
+function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; expandClickFailsOnce?: boolean; refoldOnSave?: boolean; lateShowMoreAtPoll?: number; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean; renderedInline?: boolean; inlineMutate?: boolean; inlineDomMissing?: boolean; inlineCodeMutate?: boolean; wrongOrigin?: boolean; wrongResumeId?: boolean; pendingFirstChat?: boolean; saveAtPoll?: number; projectFirstChat?: boolean; wrongProject?: boolean; wrongCanonicalProject?: boolean; projectAlias?: boolean; memberFound?: boolean; memberWrongId?: boolean; initialDraft?: string; onWait?: (ms: number) => void; contentMatchCount?: number; contentReadFailure?: boolean; turnReadFailure?: boolean; contentCountFailure?: boolean; outermostMatchCount?: number; postClickBubbleCounts?: number[]; readbackTurnCount?: number; readbackWrongText?: boolean } = {}) {
   let logicalNow = 0;
   vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   const calls: string[] = [];
@@ -14,6 +14,8 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
   let lastUserText = "existing synthetic earlier turn";
   let pendingUserText: string | null = null;
   let polls = 0;
+  let sent = false;
+  let postClickPolls = 0;
   const completeUserTurn = (value: string) => {
     userTurns += opts.concurrentNewTurn ? 2 : 1;
     lastUserText = opts.postedDifferentText ? "unrelated user turn" : value;
@@ -62,13 +64,18 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     getByRole: vi.fn(() => expand),
   };
   const userTurnsLocator = { count: vi.fn(async () => opts.siteBubble ? 0 : userTurns), nth: vi.fn(() => userMessage) };
-  const bubbleTurnsLocator = { count: vi.fn(async () => opts.siteBubble ? userTurns : 0), nth: vi.fn(() => userMessage) };
+  const bubbleTurnsLocator = { count: vi.fn(async () => opts.siteBubble
+    ? sent && opts.postClickBubbleCounts
+      ? opts.postClickBubbleCounts[Math.min(postClickPolls, opts.postClickBubbleCounts.length - 1)]
+      : userTurns
+    : 0), nth: vi.fn(() => userMessage) };
   const send = {
     count: vi.fn(async () => 1), first() { return this; },
     isVisible: vi.fn(async () => true), isEnabled: vi.fn(async () => true),
     click: vi.fn(async (args?: { trial?: boolean }) => {
       if (!args?.trial) {
         calls.push("send");
+        sent = true;
         if (!opts.resume) url = opts.wrongOrigin ? `https://invalid.example/c/${ID}` : opts.pendingFirstChat
           ? (opts.projectFirstChat ? `https://chatgpt.com/g/${opts.wrongProject ? "g-p-unrelated" : opts.projectAlias ? "g-p-routealias" : "g-p-synthetic"}/c/local-chatgpt%3A${ID}` : `https://chatgpt.com/c/local-chatgpt%3A${ID}`)
           : (opts.projectFirstChat ? `https://chatgpt.com/g/g-p-synthetic/c/${ID}` : `https://chatgpt.com/c/${ID}`);
@@ -112,6 +119,29 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     })),
     close: vi.fn(async () => undefined),
   };
+  const readbackMessage = {
+    locator: vi.fn(() => ({
+      count: vi.fn(async () => 1),
+      first: vi.fn(() => ({
+        innerText: vi.fn(async () => opts.readbackWrongText ? "OTHER_SAVED_MESSAGE" : lastUserText),
+      })),
+    })),
+  };
+  let readbackUrl = "";
+  const readbackPage = {
+    goto: vi.fn(async (target: string) => { readbackUrl = target; }),
+    url: vi.fn(() => readbackUrl),
+    locator: vi.fn(() => ({
+      count: vi.fn(async () => opts.readbackTurnCount ?? 1),
+      first: vi.fn(() => ({
+        waitFor: vi.fn(async () => undefined),
+        locator: readbackMessage.locator,
+      })),
+    })),
+    waitForTimeout: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
+  };
+  let probeCount = 0;
   const page = {
     goto: vi.fn(async (target: string) => { calls.push("goto:" + target); url = target; }),
     getByRole: vi.fn(() => tryInChat),
@@ -127,6 +157,7 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     waitForTimeout: vi.fn(async (duration: number) => {
       opts.onWait?.(duration);
       polls++;
+      if (sent) postClickPolls++;
       if (opts.pendingFirstChat && opts.saveAtPoll !== undefined && polls >= opts.saveAtPoll) {
         if (opts.refoldOnSave && !refoldPerformed) { expanded = false; refoldPerformed = true; }
         url = opts.projectFirstChat ? `https://chatgpt.com/g/${opts.wrongCanonicalProject ? "g-p-unrelated" : opts.projectAlias ? "g-p-routealias" : "g-p-synthetic"}/c/${ID}` : `https://chatgpt.com/c/${ID}`;
@@ -138,7 +169,7 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     }),
     waitForURL: vi.fn(async () => undefined),
     url: vi.fn(() => url),
-    context: vi.fn(() => ({ newPage: vi.fn(async () => memberPage) })),
+    context: vi.fn(() => ({ newPage: vi.fn(async () => (++probeCount === 1 ? memberPage : readbackPage)) })),
   };
   return { page, calls, send, composer, form, userTurnsLocator, get polls() { return polls; } };
 }
@@ -587,6 +618,42 @@ describe("ChatGPT composer compatibility", () => {
     await expect(sendChatGptPrompt(f.page as unknown as Parameters<typeof sendChatGptPrompt>[0],source))
       .rejects.toMatchObject({code:"DISPATCH_AMBIGUOUS"});
     expect(f.calls.filter(v=>v==="send")).toHaveLength(1);
+  });
+
+  const remountCounts = [
+    2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1,
+  ];
+  it("Issue #57 RED: 0→2→0→1 Project canonical hydration yields exactly one full owned saved Turn", async () => {
+    let clock = 0;
+    const f = fixture({ siteBubble: true, projectFirstChat: true, projectAlias: true,
+      pendingFirstChat: true, saveAtPoll: 2, memberFound: true,
+      postClickBubbleCounts: remountCounts, onWait: ms => { clock += ms; } });
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    await expect(sendChatGptPrompt(f.page as unknown as Parameters<typeof sendChatGptPrompt>[0],
+      "ISSUE57_CANONICAL_HYDRATED_UNIQUE_EXACT_SOURCE")).resolves.toEqual(expect.any(Number));
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    expect(clock).toBeLessThanOrEqual(12_200);
+    expect(f.page.context).toHaveBeenCalled();
+  });
+  it.each([
+    { scenario: "two genuine saved User Turns", readbackTurnCount: 2 },
+    { scenario: "foreign saved User Turn", readbackWrongText: true },
+    { scenario: "original Project has no membership", memberFound: false },
+    { scenario: "saved ID belongs to another Project", memberWrongId: true },
+    { scenario: "different message was submitted", postedDifferentText: true },
+    { scenario: "Composer retains a draft", composerStuck: true },
+    { scenario: "canonical User never hydrates", postClickBubbleCounts: [2, 2, ...Array(42).fill(0)] },
+    { scenario: "wrong-origin navigation", wrongOrigin: true, pendingFirstChat: false },
+  ])("Issue #57 hydration MUST remain UNKNOWN: $scenario", async flags => {
+    let clock = 0;
+    const f = fixture({ siteBubble: true, projectFirstChat: true, projectAlias: true,
+      pendingFirstChat: true, saveAtPoll: 2, memberFound: true,
+      postClickBubbleCounts: remountCounts, onWait: ms => { clock += ms; }, ...flags });
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    await expect(sendChatGptPrompt(f.page as unknown as Parameters<typeof sendChatGptPrompt>[0],
+      "ISSUE57_NEVER_CONFIRM_UNPROVEN_SAVED_USER_TURN")).rejects.toMatchObject({code:"DISPATCH_AMBIGUOUS"});
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
   });
 
   it.each([
