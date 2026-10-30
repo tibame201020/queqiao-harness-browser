@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { collectPendingDiagnostic } from "../core/collect-diagnostics.js";
 import type { BrowserSession } from "../core/session.js";
 import { selectRetentionCandidates } from "../core/state.js";
 import type { HarnessAdapter } from "./types.js";
@@ -90,6 +91,7 @@ const collectArgsSchema = z.object({
   projectName: z.string().min(1).max(256).optional(),
   timeoutMs: z.number().int().min(1000).max(90_000).default(60_000),
   settleMs: z.number().int().min(1000).max(30_000).default(3000),
+  diagnostics: z.object({ captureOnPending: z.boolean().default(false) }).strict().optional(),
 }).strict();
 
 export type ChatGptAdapterConfig = z.infer<typeof chatGptConfigSchema>;
@@ -382,7 +384,8 @@ async function collect(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
     }
   }
 
-  const deadline = Date.now() + input.timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + input.timeoutMs;
   let state = initialAssistantCollectState();
 
   while (true) {
@@ -393,7 +396,9 @@ async function collect(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
       : "";
     const generating = await isChatGptGenerationActive(page);
 
-    state = advanceAssistantCollectScan(state, { assistantCount, latestText, generating }, Date.now(), input.settleMs);
+    const previousState = state;
+    const snapshot = { assistantCount, latestText, generating };
+    state = advanceAssistantCollectScan(state, snapshot, Date.now(), input.settleMs);
     if (state.done) {
       return {
         status: "completed",
@@ -408,6 +413,7 @@ async function collect(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
         status: "pending",
         conversationId: input.conversationId,
         partialText: state.latestText,
+        diagnostic: collectPendingDiagnostic(snapshot, previousState, Date.now()-startedAt, input.timeoutMs, input.settleMs),
         url: page.url(),
       };
     }

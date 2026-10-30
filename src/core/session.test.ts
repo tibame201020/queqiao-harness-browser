@@ -51,6 +51,19 @@ describe("CDP session lifecycle", () => {
     expect(context.close).not.toHaveBeenCalled();
   });
 
+  it("allocates distinct owned pages for simultaneous CDP Collect runs", async () => {
+    const owned=[{close:vi.fn().mockResolvedValue(undefined)},{close:vi.fn().mockResolvedValue(undefined)}];
+    const context={newPage:vi.fn().mockResolvedValueOnce(owned[0]).mockResolvedValueOnce(owned[1]),pages:vi.fn().mockReturnValue([])};
+    const browsers=[0,1].map(()=>({contexts:vi.fn().mockReturnValue([context]),close:vi.fn().mockResolvedValue(undefined)}));
+    vi.mocked(chromium.connectOverCDP).mockResolvedValueOnce(browsers[0] as never).mockResolvedValueOnce(browsers[1] as never);
+    const config=normalizeHarnessConfig({name:"synthetic",adapter:"chatgpt",browser:{engine:"chromium",channel:"chrome",connection:"cdp",cdpUrl:"http://127.0.0.1:9555",headless:false}});
+    const sessions=await Promise.all([openBrowserSession(config,"unused"),openBrowserSession(config,"unused")]);
+    expect(sessions[0].page).not.toBe(sessions[1].page);
+    expect(context.newPage).toHaveBeenCalledTimes(2);
+    await Promise.all(sessions.map(s=>s.close()));
+    expect(owned[0].close).toHaveBeenCalledOnce();expect(owned[1].close).toHaveBeenCalledOnce();
+  });
+
   it("disconnects a CDP client even if no browser context exists", async () => {
     const browser = {
       contexts: vi.fn().mockReturnValue([]),
