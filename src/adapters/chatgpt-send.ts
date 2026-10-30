@@ -36,6 +36,15 @@ type PostClickTurnEvidence = {
   verifiedNewTurn: boolean;
   sameCountLastMatchesOriginal: boolean;
   sameCountLastChanged: boolean;
+  folded: {
+    previewCorrelated: boolean;
+    expandControlMax: number;
+    expandAttempts: number;
+    expandClickSucceeded: boolean;
+    expandedFullTextMatched: boolean;
+    canonicalSavedIdSeen: boolean;
+    originalProjectMembership: "not_checked" | "confirmed" | "rejected";
+  };
   // Count and categorical outcome only; no message content or DOM in diagnostics.
   messageInspection?: {
     family: "bubble" | "legacy";
@@ -297,12 +306,21 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     verifiedNewTurn: false,
     sameCountLastMatchesOriginal: false,
     sameCountLastChanged: false,
+    folded: {
+      previewCorrelated: false, expandControlMax: 0, expandAttempts: 0,
+      expandClickSucceeded: false, expandedFullTextMatched: false,
+      canonicalSavedIdSeen: false, originalProjectMembership: "not_checked",
+    },
     samples: [],
   };
   let stableSince: number | null = null;
   const fingerprintKey = onEvidence ? randomBytes(32) : null;
   let lastSeenFingerprint: string | null = null;
-  let expansionAttempted = false;
+  let expansionAttempts = 0;
+  let foldedCandidateObserved = false;
+  let expandedMatchObserved = false;
+  let expansionClickSucceeded = false;
+  let maxExpandControls = 0;
   let ownedProvisionalUrl: string | null = null;
   let provisionalAliasSeen = false;
   let membershipCheckedId: string | null = null;
@@ -400,20 +418,33 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
 
 
       newTurnMatches = await confirmsContent(observed);
-      if (!newTurnMatches && expansionAttempted && typeof observed === "string") reason = "expanded_text_mismatch";
-      if (!newTurnMatches && typeof observed === "string" && message && !expansionAttempted) {
+      const semantic = (value: string) => value.replace(/[\s\u00a0]+/gu, " ").trim();
+      const source = semantic(prompt);
+      const preview = typeof observed === "string" ? semantic(observed) : "";
+      // Correlated folded previews can justify bounded *observation only*.
+      // Never treat a folded prefix as submission proof, even with a canonical ID.
+      const foldedPreview = !!firstChatProjectId && source.length > 10_240
+        && preview.length >= 10_000 && preview.length <= 10_300
+        && preview.length < source.length
+        && source.slice(0, 10_000) === preview.slice(0, 10_000);
+      foldedCandidateObserved ||= foldedPreview;
+      if (!newTurnMatches && foldedPreview) reason = "expand_control_missing";
+      if (!newTurnMatches && typeof observed === "string" && message && expansionAttempts < 4) {
         // ChatGPT can collapse long User bubbles at 10,240 visible characters.
         // Folded UI can differ from the complete semantic content. Only the newly added
         // User Turn may be expanded; exact content or conservative structured Markdown correlation is required.
         const showMore = turn.getByRole("button", { name: /^(?:Show more|See more|顯示較多|顯示更多|显示更多)$/i });
-        const expansionControls = await showMore.count().catch(() => 0);
-        if (expansionControls !== 1) reason = "expand_control_missing";
+        const expansionControls = await showMore.count().catch(() => -1);
+        maxExpandControls = Math.max(maxExpandControls, expansionControls);
+        if (expansionControls !== 1) reason = expansionClickSucceeded ? "expanded_text_mismatch" : "expand_control_missing";
         if (expansionControls === 1) {
           reason = "expand_click_failed";
-          expansionAttempted = true;
-          if (await showMore.click({ timeout: 750 }).then(() => true).catch(() => false)) {
+          expansionAttempts++;
+          if (await showMore.click({ timeout: 1_000 }).then(() => true).catch(() => false)) {
+            expansionClickSucceeded = true;
             const expanded = await message.innerText({ timeout: 500 }).catch(() => null);
             newTurnMatches = await confirmsContent(expanded);
+            if (newTurnMatches) expandedMatchObserved = true;
             reason = newTurnMatches ? "stabilizing" : "expanded_text_mismatch";
           }
         }
@@ -440,6 +471,15 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     }
     evidence.observedNewTurn ||= priorCount >= 0 && turnCount === priorCount + 1;
     evidence.verifiedNewTurn ||= newTurnMatches;
+    evidence.folded = {
+      previewCorrelated: foldedCandidateObserved,
+      expandControlMax: maxExpandControls,
+      expandAttempts: expansionAttempts,
+      expandClickSucceeded: expansionClickSucceeded,
+      expandedFullTextMatched: expandedMatchObserved,
+      canonicalSavedIdSeen: !!canonicalProjectCandidate,
+      originalProjectMembership: evidence.folded.originalProjectMembership,
+    };
     evidence.samples.push({
       bubbles: bubbleCount, legacy: legacyCount,
       correctTarget: targetValid, editorEmpty, generationActive: snapshot.state.generationActive,
@@ -455,7 +495,8 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     // Provisional local-chatgpt IDs are NOT saved Conversation IDs and never confirm Send.
     snapshot.state.submissionConfirmed = targetValid && newTurnMatches;
     snapshot.state.composerSettled = editorEmpty;
-    snapshot.state.postClickReason = !targetValid ? "target_unconfirmed"
+    snapshot.state.postClickReason = (!targetValid && !membershipRequired && !provisionalFirstChat)
+      ? "target_unconfirmed"
       : newTurnMatches ? editorEmpty ? "stabilizing" : "composer_not_settled" : reason;
     const now = Date.now();
     if (provisionalFirstChat && newTurnMatches && editorEmpty) {
@@ -469,6 +510,7 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
           if (membershipCheckedId !== currentId) {
             membershipCheckedId = currentId;
             const member = await savedConversationInOriginalProject(page, firstChatProjectId, currentId);
+            evidence.folded.originalProjectMembership = member ? "confirmed" : "rejected";
             if (member) return;
           }
           throw diagnostic("DISPATCH_AMBIGUOUS", snapshot.state);
@@ -484,7 +526,10 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
     const provedBeforeDeadline = stableSince !== null && stableSince - clickedAt <= POST_CLICK_MAX_MS;
     const waitingForFirstSave = ownedProvisionalUrl !== null && (targetValid || canonicalProjectCandidate
       || (provisionalFirstChat && snapshot.state.url === ownedProvisionalUrl));
-    const deadline = waitingForFirstSave ? POST_CLICK_PENDING_SAVE_MAX_MS
+    const foldedObservation = !!firstChatProjectId && foldedCandidateObserved
+      && turnCount === priorCount + 1 && editorEmpty
+      && (targetValid || provisionalFirstChat || canonicalProjectCandidate);
+    const deadline = waitingForFirstSave || foldedObservation ? POST_CLICK_PENDING_SAVE_MAX_MS
       : POST_CLICK_MAX_MS + (provedBeforeDeadline ? POST_CLICK_PROVEN_GRACE_MS : 0);
     if (now - clickedAt >= deadline) throw diagnostic("DISPATCH_AMBIGUOUS", snapshot.state);
     await page.waitForTimeout(200);

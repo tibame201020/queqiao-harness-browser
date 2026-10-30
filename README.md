@@ -198,12 +198,14 @@ Current ChatGPT user bubbles use `[data-user-message-bubble="true"]`; the older
 `[data-message-author-role="user"]` remains a fallback. Count one DOM family at a time
 to avoid treating nested wrappers as multiple submitted turns.
 Long User bubbles may be **visually collapsed** to 10,240 displayed characters by
-ChatGPT. If a newly added bubble does not fully match, even when its folded
-display is not a proper prefix of the expected message,
-the adapter may click exactly one recognized `Show more` /
-`顯示較多` control **inside that new bubble**, then verify the entire expanded
-text against the prompt. A prefix alone, missing expansion control, failed
-expansion, or mismatched expanded text is never evidence of successful dispatch.
+ChatGPT. Only the unique newly added User bubble may be expanded using a
+recognized `Show more` control, with at most four bounded UI-only attempts
+(after transient click failures or a canonical navigation remount). For a first
+Project Send, a strongly correlated folded prefix and empty Composer can extend
+**observation only** to the existing 12-second ceiling. A prefix, a missing
+control, a failed expansion or mismatched expanded text never confirms Send:
+full source equality, canonical ID and original Project membership are still
+mandatory. See `ISSUE55_FOLDED_PROJECT_ACCEPTANCE_20261030.md`.
 No extra Send or original Run replay is performed; this is a UI-only expansion.
 Observations must remain stable; if a click was possible but these predicates fail,
 the result is `ambiguous/SEND_OUTCOME_UNKNOWN`, never a safe-to-resend error.

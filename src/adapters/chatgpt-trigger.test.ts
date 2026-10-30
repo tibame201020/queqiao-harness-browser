@@ -4,7 +4,7 @@ import { sendChatGptPrompt } from "./chatgpt-send.js";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
-function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean; renderedInline?: boolean; inlineMutate?: boolean; inlineDomMissing?: boolean; inlineCodeMutate?: boolean; wrongOrigin?: boolean; wrongResumeId?: boolean; pendingFirstChat?: boolean; saveAtPoll?: number; projectFirstChat?: boolean; wrongProject?: boolean; wrongCanonicalProject?: boolean; projectAlias?: boolean; memberFound?: boolean; memberWrongId?: boolean; initialDraft?: string; onWait?: (ms: number) => void; contentMatchCount?: number; contentReadFailure?: boolean; turnReadFailure?: boolean; contentCountFailure?: boolean; outermostMatchCount?: number } = {}) {
+function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; siteBubble?: boolean; postClickStuck?: boolean; postClickSettleAfter?: number; composerStuck?: boolean; postedDifferentText?: boolean; collapseLong?: boolean; foldedDifferent?: boolean; expandClickFailsOnce?: boolean; refoldOnSave?: boolean; lateShowMoreAtPoll?: number; noExpand?: boolean; expandWrongText?: boolean; renderedFormatted?: boolean; noFormattedDOM?: boolean; changedRenderedTail?: boolean; changedRenderedMiddle?: boolean; concurrentNewTurn?: boolean; renderedInline?: boolean; inlineMutate?: boolean; inlineDomMissing?: boolean; inlineCodeMutate?: boolean; wrongOrigin?: boolean; wrongResumeId?: boolean; pendingFirstChat?: boolean; saveAtPoll?: number; projectFirstChat?: boolean; wrongProject?: boolean; wrongCanonicalProject?: boolean; projectAlias?: boolean; memberFound?: boolean; memberWrongId?: boolean; initialDraft?: string; onWait?: (ms: number) => void; contentMatchCount?: number; contentReadFailure?: boolean; turnReadFailure?: boolean; contentCountFailure?: boolean; outermostMatchCount?: number } = {}) {
   let logicalNow = 0;
   vi.spyOn(Date, "now").mockImplementation(() => { logicalNow += 180; return logicalNow; });
   const calls: string[] = [];
@@ -20,6 +20,8 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     if (!opts.composerStuck) editorText = "";
   };
   let expanded = false;
+  let expansionFailureConsumed = false;
+  let refoldPerformed = false;
   const shownText = () => opts.renderedInline
     ? (() => { const text = lastUserText.replace(/`([^`\r\n]+)`/g, "$1");
       return opts.inlineMutate ? text.replace("END_INTACT", "END_MUTATED") : text; })()
@@ -41,8 +43,16 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
       ? (lastUserText.match(/`([^`\r\n]+)`/g) || []).map((t, i) => i === 2 && opts.inlineCodeMutate ? "MUTATED" : t.slice(1, -1)) : []),
   })) };
   const expand = {
-    count: vi.fn(async () => opts.collapseLong && !expanded && !opts.noExpand ? 1 : 0),
-    click: vi.fn(async () => { calls.push("expand"); expanded = true; }),
+    count: vi.fn(async () => opts.collapseLong && !expanded && !opts.noExpand
+      && (opts.lateShowMoreAtPoll === undefined || polls >= opts.lateShowMoreAtPoll) ? 1 : 0),
+    click: vi.fn(async () => {
+      calls.push("expand");
+      if (opts.expandClickFailsOnce && !expansionFailureConsumed) {
+        expansionFailureConsumed = true;
+        throw new Error("synthetic transient UI replacement");
+      }
+      expanded = true;
+    }),
   };
   const userMessage = {
     innerText: vi.fn(async () => { if (opts.turnReadFailure) throw new Error("transient turn read failure"); return shownText(); }), textContent: vi.fn(async () => shownText()),
@@ -118,6 +128,7 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
       opts.onWait?.(duration);
       polls++;
       if (opts.pendingFirstChat && opts.saveAtPoll !== undefined && polls >= opts.saveAtPoll) {
+        if (opts.refoldOnSave && !refoldPerformed) { expanded = false; refoldPerformed = true; }
         url = opts.projectFirstChat ? `https://chatgpt.com/g/${opts.wrongCanonicalProject ? "g-p-unrelated" : opts.projectAlias ? "g-p-routealias" : "g-p-synthetic"}/c/${ID}` : `https://chatgpt.com/c/${ID}`;
       }
       if (pendingUserText !== null && polls >= (opts.postClickSettleAfter ?? 0)) {
@@ -544,6 +555,40 @@ describe("ChatGPT composer compatibility", () => {
       "SYNTHETIC_PROJECT_ALIAS_NOT_VERIFIED")).rejects.toMatchObject({code:"DISPATCH_AMBIGUOUS"});
     expect(f.calls.filter(x=>x==="send")).toHaveLength(1);
   });
+  it.each([
+    { scenario: "temporary expand click failure", expandClickFailsOnce: true },
+    { scenario: "canonical remount refolds bubble", refoldOnSave: true },
+    { scenario: "Show more appears after base post-click deadline", lateShowMoreAtPoll: 31 },
+  ])("Issue #55 RED: 11,831-char Project alias folded Turn eventually validates after %s", async flags => {
+    let clock = 0;
+    const f = fixture({siteBubble:true,projectFirstChat:true,projectAlias:true,pendingFirstChat:true,
+      saveAtPoll:14,memberFound:true,collapseLong:true,onWait:ms=>{clock+=ms;},...flags});
+    vi.spyOn(Date,"now").mockImplementation(()=>clock);
+    const source="SYNTHETIC_LONG_PROJECT_55:"+("A".repeat(11_831-26));
+    expect(source.length).toBe(11_831);
+    await expect(sendChatGptPrompt(f.page as unknown as Parameters<typeof sendChatGptPrompt>[0],source))
+      .resolves.toEqual(expect.any(Number));
+    expect(f.calls.filter(v=>v==="send")).toHaveLength(1);
+    expect(f.calls.filter(v=>v==="expand").length).toBeGreaterThanOrEqual(1);
+  });
+  it.each([
+    { noExpand:true },
+    { expandWrongText:true },
+    { concurrentNewTurn:true },
+    { composerStuck:true },
+    { memberFound:false },
+  ])("Issue #55: even a matching folded prefix is never a submission receipt without full ownership (%j)", async flags => {
+    let clock=0;
+    const f=fixture({siteBubble:true,projectFirstChat:true,projectAlias:true,pendingFirstChat:true,
+      saveAtPoll:14,memberFound:true,collapseLong:true,onWait:ms=>{clock+=ms;},...flags});
+    vi.spyOn(Date,"now").mockImplementation(()=>clock);
+    const source="SYNTHETIC_LONG_PROJECT_NEGATIVE_55:"+("B".repeat(11_831-35));
+    expect(source.length).toBe(11_831);
+    await expect(sendChatGptPrompt(f.page as unknown as Parameters<typeof sendChatGptPrompt>[0],source))
+      .rejects.toMatchObject({code:"DISPATCH_AMBIGUOUS"});
+    expect(f.calls.filter(v=>v==="send")).toHaveLength(1);
+  });
+
   it.each([
     { pendingFirstChat: true, saveAtPoll: undefined },
     { pendingFirstChat: true, saveAtPoll: 34, postedDifferentText: true },
