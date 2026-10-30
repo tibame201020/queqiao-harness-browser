@@ -5,7 +5,7 @@ import { profilePaths } from "./store.js";
 
 // Original prompt is private runtime state, never part of the MCP result or repository.
 // The read-only resume action needs the entire original source to verify Markdown render fidelity.
-export type TurnBaseline = { bubbles: number; legacy: number };
+export type TurnBaseline = { bubbles: number; legacy: number; messageIds?: string[] };
 export type SendAttempt = {
   id: string;
   status: "unknown" | "submitted";
@@ -46,18 +46,25 @@ export async function loadSendAttempt(home: string, profile: string, id: string)
   const data = JSON.parse(await fs.readFile(paths(home, profile, id).file, "utf8")) as SendAttempt;
   if (data.id !== id || !(data.conversationId && validUuid.test(data.conversationId)
     || data.conversationId === null && /^g-p-[A-Za-z0-9_-]{1,120}$/.test(data.projectId ?? ""))
-    || (data.observedUrl !== undefined && !canonicalProjectUrl(data.observedUrl))
+    || (data.observedUrl !== undefined && (!canonicalProjectUrl(data.observedUrl)
+      || (data.conversationId && canonicalProjectUrl(data.observedUrl)!.id.toLowerCase() !== data.conversationId.toLowerCase())))
     || !/^[0-9a-f]{64}$/.test(data.browserBinding) || !["unknown", "submitted"].includes(data.status)
     || typeof data.prompt !== "string" || (data.status === "unknown" && !data.prompt)
     || !Number.isInteger(data.baseline?.bubbles) || !Number.isInteger(data.baseline?.legacy)
-    || data.baseline.bubbles < 0 || data.baseline.legacy < 0) throw new Error("Invalid private Send attempt");
+    || data.baseline.bubbles < 0 || data.baseline.legacy < 0
+    || (data.baseline.messageIds !== undefined && (!Array.isArray(data.baseline.messageIds)
+      || data.baseline.messageIds.some(id => typeof id !== "string" || !validUuid.test(id))
+      || new Set(data.baseline.messageIds).size !== data.baseline.messageIds.length))) throw new Error("Invalid private Send attempt");
   return data;
 }
 export async function beginSendAttempt(home: string, profile: string,
-  input: { prompt: string; conversationId: string | null; projectId?: string; baseline: TurnBaseline; browserBinding: string }): Promise<SendAttempt> {
+  input: { prompt: string; conversationId: string | null; projectId?: string; observedUrl?: string; baseline: TurnBaseline; browserBinding: string }): Promise<SendAttempt> {
   if (!(input.conversationId && validUuid.test(input.conversationId)
     || input.conversationId === null && /^g-p-[A-Za-z0-9_-]{1,120}$/.test(input.projectId ?? "")) || !/^[0-9a-f]{64}$/.test(input.browserBinding) || !input.prompt || input.baseline.bubbles < 0 || input.baseline.legacy < 0)
     throw new Error("Send attempt requires a saved Conversation or original Project and baseline");
+  if (input.observedUrl && (input.conversationId === null
+    || canonicalProjectUrl(input.observedUrl)?.id.toLowerCase() !== input.conversationId.toLowerCase()))
+    throw new Error("Original saved Conversation URL does not match the pre-click target");
   const id = randomUUID(), { dir, file } = paths(home, profile, id);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   // Exclusive lock prevents two concurrent Runner processes from claiming the same
@@ -76,6 +83,7 @@ export async function beginSendAttempt(home: string, profile: string,
   if (writeError !== undefined) { await fs.rm(active, { force: true }); throw writeError; }
   const data: SendAttempt = {
     id, status: "unknown", prompt: input.prompt, conversationId: input.conversationId, projectId: input.projectId,
+    observedUrl: input.observedUrl,
     browserBinding: input.browserBinding,
     baseline: { ...input.baseline }, createdAt: new Date().toISOString(),
   };

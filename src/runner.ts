@@ -85,7 +85,8 @@ async function runProfile(name: string, action?: string, args: Record<string, un
         const resumeArgs = projectFirstResume
           ? { prompt: original.prompt, projectId: original.projectId, conversationUrl: original.observedUrl,
               baseline: original.baseline }
-          : { prompt: original.prompt, conversationId: original.conversationId, baseline: original.baseline };
+          : { prompt: original.prompt, conversationId: original.conversationId,
+              observedUrl: original.observedUrl, baseline: original.baseline };
         if (projectFirstResume && !original.observedUrl) return {
           status: "pending", submissionState: "unknown", retryable: false, canResume: true, attemptId: id,
         };
@@ -103,7 +104,7 @@ async function runProfile(name: string, action?: string, args: Record<string, un
             if (!input.conversationId && !input.projectId) return;
             const original = await beginSendAttempt(home, name, {
               prompt, conversationId: input.conversationId, projectId: input.projectId,
-              baseline: input.baseline, browserBinding,
+              observedUrl: input.observedUrl, baseline: input.baseline, browserBinding,
             });
             attemptId = original.id;
             await writeState(name, { pendingAttemptId: attemptId });

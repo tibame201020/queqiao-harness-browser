@@ -226,6 +226,13 @@ read-only Resume reopens the same saved Conversation. A stable baseline + 1
 User Turn with one unique exact original last message returns `submitted`;
 otherwise the Attempt remains UNKNOWN and is never re-sent.
 See `ISSUE63_EXISTING_CONVERSATION_RESUME_ACCEPTANCE_20261030.md`.
+**Issue #63 persistent message identity (v0.5.13):** the existing saved-Conversation
+Send now records first-party persisted User message IDs before its one click,
+and confirms the original Attempt using a previously unseen saved message ID
+with matching complete input. Transient `baseline + 1` DOM counts do not determine
+success for new ID-backed attempts; Resume uses the actual original Project
+Conversation route. No named round, extra Send, approval or governance layer.
+See `ISSUE63_PERSISTED_MESSAGE_ID_ACCEPTANCE_20261030.md`.
 No extra Send or original Run replay is performed; this is a UI-only expansion.
 Observations must remain stable; if a click was possible but these predicates fail,
 the result is `ambiguous/SEND_OUTCOME_UNKNOWN`, never a safe-to-resend error.

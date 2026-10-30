@@ -631,59 +631,68 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
   }
 }
 
-/**
- * Issue #63: an existing saved Conversation can show 0 or duplicated User wrappers
- * during read-only hydration. Verify the persisted continuation in a separate tab,
- * not the transient count on the Resume tab. Never composes or dispatches a Send.
- */
+const SAVED_MESSAGE_UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+
+/** ChatGPT's observed first-party search-message IDs are message identity, unlike bubble counts. */
+async function visibleUserMessageIds(page: Page): Promise<string[] | null> {
+  const bubbles = page.locator(USER_BUBBLES);
+  if (typeof bubbles.evaluateAll !== "function") return null;
+  const ids = await bubbles.evaluateAll(elements => elements.map(element => {
+    let node: Element | null = element;
+    while (node && !node.hasAttribute("data-chatgpt-search-message-ids")) node = node.parentElement;
+    return node?.getAttribute("data-chatgpt-search-message-ids") ?? null;
+  })).catch(() => null);
+  if (!ids || ids.some(id => !id || !SAVED_MESSAGE_UUID.test(id))
+    || new Set(ids).size !== ids.length) return null;
+  return ids as string[];
+}
+
+/** Saved-source verification requires one previously unseen first-party message ID, not N+1 DOM nodes. */
 async function verifySavedContinuationTurn(page: Page, prompt: string, expectedId: string,
-  baseline: { bubbles: number; legacy: number }): Promise<boolean> {
-  if (baseline.bubbles < 1 && baseline.legacy < 1) return false;
+  baseline: { bubbles: number; legacy: number; messageIds?: string[] }): Promise<boolean> {
+  const priorIds = baseline.messageIds;
+  if (!priorIds || !priorIds.length || new Set(priorIds).size !== priorIds.length) return false;
   const original = safeUrl(page);
   if (original.id !== expectedId || !/^https:\/\/chatgpt\.com\/(?:g\/g-p-[A-Za-z0-9_-]{1,120}\/)?c\/[0-9a-f-]{36}$/i.test(original.url)) return false;
+  const seen = new Set(priorIds);
   let probe: Page | null = null;
   try {
     probe = await page.context().newPage();
     await probe.goto(original.url, { waitUntil: "domcontentloaded", timeout: 15_000 });
-    const verified = async (): Promise<boolean> => {
+    const verifiedId = async (): Promise<string | null> => {
       const route = safeUrl(probe!);
-      if (route.id !== expectedId || !/^https:\/\/chatgpt\.com\/(?:g\/g-p-[A-Za-z0-9_-]{1,120}\/)?c\/[0-9a-f-]{36}$/i.test(route.url)) return false;
-      const bubbles = probe!.locator(USER_BUBBLES);
-      const count = await bubbles.count();
-      const useBubbles = count > 0;
-      const turns = useBubbles ? bubbles : probe!.locator(LEGACY_USER_TURNS);
-      const expected = (useBubbles ? baseline.bubbles : baseline.legacy) + 1;
-      if (expected < 2 || await turns.count() !== expected) return false;
-      let matching = 0;
-      let lastMatches = false;
-      for (let i = 0; i < expected; i++) {
-        const turn = turns.nth(i);
+      if (route.id !== expectedId || !/^https:\/\/chatgpt\.com\/(?:g\/g-p-[A-Za-z0-9_-]{1,120}\/)?c\/[0-9a-f-]{36}$/i.test(route.url)) return null;
+      const ids = await visibleUserMessageIds(probe!);
+      if (!ids) return null;
+      const users = probe!.locator(USER_BUBBLES);
+      const fresh = ids.flatMap((id, index) => seen.has(id) ? [] : [{ id, index }]);
+      let matchedId: string | null = null;
+      for (const { id, index } of fresh) {
+        const turn = users.nth(index);
         const root = turn.locator(".whitespace-pre-wrap:not(.whitespace-pre-wrap .whitespace-pre-wrap)");
-        const roots = await root.count();
-        if (roots > 1) return false;
-        const message = roots === 1 ? root.first() : roots === 0 ? turn : null;
-        if (!message) return false;
-        let shown = await message.innerText({ timeout: 1_000 }).catch(() => null);
-        if (i === expected - 1 && typeof shown === "string" && !sameSubmittedText(shown, prompt) && prompt.length > 10_240) {
+        const roots = await root.count().catch(() => -1);
+        if (roots !== 1) return null;
+        let text = await root.first().innerText({ timeout: 1_000 }).catch(() => null);
+        if (typeof text === "string" && !sameSubmittedText(text, prompt) && prompt.length > 10_240) {
           const more = turn.getByRole("button", { name: /^(?:Show more|See more|顯示較多|顯示更多|显示更多)$/i });
           if (await more.count().catch(() => 0) === 1) {
             await more.click({ timeout: 1_000 }).catch(() => {});
-            shown = await message.innerText({ timeout: 1_000 }).catch(() => null);
+            text = await root.first().innerText({ timeout: 1_000 }).catch(() => null);
           }
         }
-        if (typeof shown !== "string") return false;
-        if (sameSubmittedText(shown, prompt)) {
-          matching++;
-          lastMatches = i === expected - 1;
+        if (typeof text === "string" && sameSubmittedText(text, prompt)) {
+          if (matchedId !== null) return null; // Two different persisted new messages match.
+          matchedId = id;
         }
       }
-      return matching === 1 && lastMatches;
+      return matchedId;
     };
     const deadline = Date.now() + 12_000;
     while (Date.now() < deadline) {
-      if (await verified()) {
+      const found = await verifiedId();
+      if (found) {
         await probe.waitForTimeout(600);
-        if (await verified()) return true;
+        if (await verifiedId() === found) return true;
       }
       await probe.waitForTimeout(300);
     }
@@ -693,22 +702,21 @@ async function verifySavedContinuationTurn(page: Page, prompt: string, expectedI
 }
 
 export async function reconcileChatGptSend(page: Page, prompt: string, expectedId: string,
-  baseline: { bubbles: number; legacy: number },
+  baseline: { bubbles: number; legacy: number; messageIds?: string[] },
   onEvidence?: (value: PostClickTurnEvidence) => void): Promise<boolean> {
   // Read-only re-observation of the *original* Send. No composing, click or new dispatch.
   if (safeUrl(page).id !== expectedId) return false;
+  if (baseline.messageIds?.length) return verifySavedContinuationTurn(page, prompt, expectedId, baseline);
   try {
     await awaitPostClickSettlement(page, prompt, Date.now(), expectedId, expectedId, baseline, onEvidence);
     return true;
   } catch {
-    // A live 0→10 remount can hide the fifth persisted User Turn.
-    // Re-read the SAME saved Conversation without sending anything.
-    return verifySavedContinuationTurn(page, prompt, expectedId, baseline);
+    return false; // Legacy Attempt has no pre-click message IDs to attribute a remounted saved User message.
   }
 }
 
 export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?: string,
-  beforeClick?: (baseline: { bubbles: number; legacy: number }) => Promise<void>): Promise<number> {
+  beforeClick?: (baseline: { bubbles: number; legacy: number; messageIds?: string[] }) => Promise<void>): Promise<number> {
   const started = Date.now();
   const initialLocation = safeUrl(page);
   const initialId = initialLocation.id;
@@ -795,7 +803,9 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
     page.locator(LEGACY_USER_TURNS).count().catch(() => -1),
   ]);
   if (beforeBubbles < 0 || beforeLegacy < 0) throw diagnostic("PRE_SEND_NOT_READY", state.state);
-  const beforeUserTurns = { bubbles: beforeBubbles, legacy: beforeLegacy };
+  const existingMessageIds = initialId && beforeBubbles > 0 ? await visibleUserMessageIds(page) : null;
+  const beforeUserTurns = { bubbles: beforeBubbles, legacy: beforeLegacy,
+    messageIds: existingMessageIds?.length === beforeBubbles ? existingMessageIds : undefined };
   // Persist original ownership proof BEFORE the one possible Send.
   // Any persistence failure happens before click and must not dispatch.
   await beforeClick?.(beforeUserTurns);
@@ -807,11 +817,18 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
     snapshot.sendActionable = state.state.sendActionable;
     throw diagnostic("DISPATCH_AMBIGUOUS", snapshot);
   }
+  let postClickError: unknown;
   try {
     await awaitPostClickSettlement(page, prompt, started, initialId, targetId, beforeUserTurns, undefined, firstChatProjectId);
-  } catch (error) {
-    if (error instanceof ChatGptSendError) throw error;
-    // A post-click DOM/page failure is never safe to reclassify as pre-send or auto-resend.
+  } catch (error) { postClickError = error; }
+  // Existing saved Conversation: persistence identity, not a transient DOM bubble delta.
+  if (initialId && beforeUserTurns.messageIds?.length) {
+    if (await verifySavedContinuationTurn(page, prompt, initialId, beforeUserTurns)) return started;
+    throw postClickError instanceof ChatGptSendError ? postClickError
+      : diagnostic("DISPATCH_AMBIGUOUS", (await inspect(page, "postclick", started, initialId, targetId)).state);
+  }
+  if (postClickError) {
+    if (postClickError instanceof ChatGptSendError) throw postClickError;
     throw diagnostic("DISPATCH_AMBIGUOUS", (await inspect(page, "postclick", started, initialId, targetId)).state);
   }
   return started;

@@ -5,7 +5,8 @@ export type AdapterExecutionContext = {
   beforeSend?: (prompt: string, input: {
     conversationId: string | null;
     projectId?: string;
-    baseline: { bubbles: number; legacy: number };
+    observedUrl?: string;
+    baseline: { bubbles: number; legacy: number; messageIds?: string[] };
   }) => Promise<void>;
 };
 
