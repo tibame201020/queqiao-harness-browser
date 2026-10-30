@@ -631,6 +631,67 @@ async function awaitPostClickSettlement(page: Page, prompt: string, started: num
   }
 }
 
+/**
+ * Issue #63: an existing saved Conversation can show 0 or duplicated User wrappers
+ * during read-only hydration. Verify the persisted continuation in a separate tab,
+ * not the transient count on the Resume tab. Never composes or dispatches a Send.
+ */
+async function verifySavedContinuationTurn(page: Page, prompt: string, expectedId: string,
+  baseline: { bubbles: number; legacy: number }): Promise<boolean> {
+  if (baseline.bubbles < 1 && baseline.legacy < 1) return false;
+  const original = safeUrl(page);
+  if (original.id !== expectedId || !/^https:\/\/chatgpt\.com\/(?:g\/g-p-[A-Za-z0-9_-]{1,120}\/)?c\/[0-9a-f-]{36}$/i.test(original.url)) return false;
+  let probe: Page | null = null;
+  try {
+    probe = await page.context().newPage();
+    await probe.goto(original.url, { waitUntil: "domcontentloaded", timeout: 15_000 });
+    const verified = async (): Promise<boolean> => {
+      const route = safeUrl(probe!);
+      if (route.id !== expectedId || !/^https:\/\/chatgpt\.com\/(?:g\/g-p-[A-Za-z0-9_-]{1,120}\/)?c\/[0-9a-f-]{36}$/i.test(route.url)) return false;
+      const bubbles = probe!.locator(USER_BUBBLES);
+      const count = await bubbles.count();
+      const useBubbles = count > 0;
+      const turns = useBubbles ? bubbles : probe!.locator(LEGACY_USER_TURNS);
+      const expected = (useBubbles ? baseline.bubbles : baseline.legacy) + 1;
+      if (expected < 2 || await turns.count() !== expected) return false;
+      let matching = 0;
+      let lastMatches = false;
+      for (let i = 0; i < expected; i++) {
+        const turn = turns.nth(i);
+        const root = turn.locator(".whitespace-pre-wrap:not(.whitespace-pre-wrap .whitespace-pre-wrap)");
+        const roots = await root.count();
+        if (roots > 1) return false;
+        const message = roots === 1 ? root.first() : roots === 0 ? turn : null;
+        if (!message) return false;
+        let shown = await message.innerText({ timeout: 1_000 }).catch(() => null);
+        if (i === expected - 1 && typeof shown === "string" && !sameSubmittedText(shown, prompt) && prompt.length > 10_240) {
+          const more = turn.getByRole("button", { name: /^(?:Show more|See more|顯示較多|顯示更多|显示更多)$/i });
+          if (await more.count().catch(() => 0) === 1) {
+            await more.click({ timeout: 1_000 }).catch(() => {});
+            shown = await message.innerText({ timeout: 1_000 }).catch(() => null);
+          }
+        }
+        if (typeof shown !== "string") return false;
+        if (sameSubmittedText(shown, prompt)) {
+          matching++;
+          lastMatches = i === expected - 1;
+        }
+      }
+      return matching === 1 && lastMatches;
+    };
+    const deadline = Date.now() + 12_000;
+    while (Date.now() < deadline) {
+      if (await verified()) {
+        await probe.waitForTimeout(600);
+        if (await verified()) return true;
+      }
+      await probe.waitForTimeout(300);
+    }
+    return false;
+  } catch { return false; }
+  finally { await probe?.close().catch(() => {}); }
+}
+
 export async function reconcileChatGptSend(page: Page, prompt: string, expectedId: string,
   baseline: { bubbles: number; legacy: number },
   onEvidence?: (value: PostClickTurnEvidence) => void): Promise<boolean> {
@@ -640,7 +701,9 @@ export async function reconcileChatGptSend(page: Page, prompt: string, expectedI
     await awaitPostClickSettlement(page, prompt, Date.now(), expectedId, expectedId, baseline, onEvidence);
     return true;
   } catch {
-    return false; // Unknown remains locked. A caller may repeat this read-only action later.
+    // A live 0→10 remount can hide the fifth persisted User Turn.
+    // Re-read the SAME saved Conversation without sending anything.
+    return verifySavedContinuationTurn(page, prompt, expectedId, baseline);
   }
 }
 
