@@ -168,6 +168,7 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
       }
     }),
     waitForURL: vi.fn(async () => undefined),
+    evaluate: vi.fn(async () => ({readyState:"complete",mainCount:1,rawComposerCount:0,rawEditableTextboxCount:0,bodyChildCount:14,documentVisibility:"visible"})),
     url: vi.fn(() => url),
     context: vi.fn(() => ({ newPage: vi.fn(async () => (++probeCount === 1 ? memberPage : readbackPage)) })),
   };
@@ -242,6 +243,44 @@ describe("ChatGPT composer compatibility", () => {
     expect(JSON.stringify(outcome)).not.toContain(original);
   });
 
+  it("Issue #68 live original tab diagnostics RED: absent Composer is not editor_read_failed", async () => {
+    const f=fixture({resume:true,siteBubble:true});
+    f.composer.count.mockResolvedValue(0);
+    const beforeSend=vi.fn();
+    const result=await chatgptAdapter.execute("trigger",{prompt:"ISSUE68_ORIGINAL_TAB_NOT_READY"},{
+      browser:{page:f.page},config:{adapterConfig:{conversation:{newChatEachRun:false,conversationId:ID}}},beforeSend});
+    expect(result).toMatchObject({status:"unavailable",submissionState:"not_sent",
+      diagnostic:{precomposeReason:"composer_absent",
+        domReadiness:{initial:{readyState:"complete",mainCount:1,rawComposerCount:0},
+          terminal:{readyState:"complete",mainCount:1,rawComposerCount:0}}}});
+    expect(beforeSend).not.toHaveBeenCalled();
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.calls.filter(x=>x==="send")).toHaveLength(0);
+    expect(f.page.context).not.toHaveBeenCalled();
+  });
+  it("Issue #68: inaccessible diagnostic DOM cannot change the no-Send outcome",async()=>{
+    const f=fixture({resume:true,siteBubble:true});
+    f.composer.count.mockResolvedValue(0);
+    f.page.evaluate.mockRejectedValue(Error("page evaluation was interrupted"));
+    const result=await chatgptAdapter.execute("trigger",{prompt:"ISSUE68_NO_DIAGNOSTIC_READ"},{
+      browser:{page:f.page},config:{adapterConfig:{conversation:{newChatEachRun:false,conversationId:ID}}}});
+    expect(result).toMatchObject({status:"unavailable",submissionState:"not_sent",
+      diagnostic:{precomposeReason:"composer_absent",domReadiness:{terminal:{readyState:"unknown",rawComposerCount:-1}}}});
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.calls.filter(x=>x==="send")).toHaveLength(0);
+  });
+  it("Issue #68 live original tab diagnostics RED: distinguish a hidden raw editor from absent DOM", async () => {
+    const f=fixture({resume:true,siteBubble:true});
+    f.composer.count.mockResolvedValue(0);
+    f.page.evaluate.mockResolvedValue({readyState:"interactive",mainCount:1,rawComposerCount:1,rawEditableTextboxCount:1,bodyChildCount:9,documentVisibility:"visible"});
+    const result=await chatgptAdapter.execute("trigger",{prompt:"ISSUE68_HIDDEN_RAW_EDITOR"},{
+      browser:{page:f.page},config:{adapterConfig:{conversation:{newChatEachRun:false,conversationId:ID}}}});
+    expect(result).toMatchObject({status:"unavailable",submissionState:"not_sent",
+      diagnostic:{precomposeReason:"composer_absent",
+        domReadiness:{terminal:{readyState:"interactive",rawComposerCount:1}}}});
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.calls.filter(x=>x==="send")).toHaveLength(0);
+  });
   it("Issue #68 RED: one focus click failure with temporary missing editor reacquires and sends once", async () => {
     const f = fixture({resume:true,siteBubble:true});
     const beforeSend = vi.fn(async () => undefined);

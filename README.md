@@ -245,6 +245,11 @@ fails its pre-Send focus click, reacquire the live editor and recheck its
 actual draft on the original saved Conversation, within the existing
 precompose readiness window. No second Send or governance extension.
 See `ISSUE68_COMPOSER_FOCUS_RETRY_20261030.md`.
+**Issue #68 original-tab diagnosis (v0.5.16):** a precompose failure now
+identifies a missing visible Composer separately from editor text-read failures
+and records only numeric/enum DOM readiness facts from the original run-owned
+page at the start and deadline. No Send or navigation behavior is changed.
+See `ISSUE68_ORIGINAL_TAB_DOM_DIAG_20261031.md`.
 No extra Send or original Run replay is performed; this is a UI-only expansion.
 Observations must remain stable; if a click was possible but these predicates fail,
 the result is `ambiguous/SEND_OUTCOME_UNKNOWN`, never a safe-to-resend error.
