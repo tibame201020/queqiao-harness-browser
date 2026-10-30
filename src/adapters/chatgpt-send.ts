@@ -307,20 +307,52 @@ async function verifyUniqueSavedProjectTurn(page: Page, canonicalUrl: string, pr
     await probe.goto(canonicalUrl, { waitUntil: "domcontentloaded", timeout: 10_000 });
     if (safeUrl(probe).url !== canonicalUrl) return false;
     const users = probe.locator(USER_BUBBLES);
-    await users.first().waitFor({ state: "attached", timeout: 6_000 });
     const verified = async (): Promise<boolean> => {
       if (await users.count() !== 1) return false;
       const turn = users.first();
       const roots = turn.locator(".whitespace-pre-wrap:not(.whitespace-pre-wrap .whitespace-pre-wrap)");
       if (await roots.count() !== 1) return false;
-      const full = await roots.first().innerText({ timeout: 1_000 }).catch(() => null);
+      let full = await roots.first().innerText({ timeout: 1_000 }).catch(() => null);
+      if (typeof full === "string" && !sameSubmittedText(full, prompt) && prompt.length > 10_240) {
+        const more = turn.getByRole("button", { name: /^(?:Show more|See more|顯示較多|顯示更多|显示更多)$/i });
+        if (await more.count().catch(() => 0) === 1) {
+          await more.click({ timeout: 1_000 }).catch(() => {});
+          full = await roots.first().innerText({ timeout: 1_000 }).catch(() => null);
+        }
+      }
       return typeof full === "string" && sameSubmittedText(full, prompt);
     };
-    if (!await verified()) return false;
-    await probe.waitForTimeout(600);
-    return await verified(); // Reject a late second persisted User Turn.
+    // A saved Conversation can hydrate 0→2→1 after a read-only navigation.
+    // Only the final one complete persisted User message matters.
+    for (let check = 0; check < 40; check++) {
+      if (await verified()) {
+        await probe.waitForTimeout(600);
+        if (await verified()) return true;
+      }
+      await probe.waitForTimeout(300);
+    }
+    return false;
   } catch { return false; }
   finally { await probe?.close().catch(() => {}); }
+}
+
+/**
+ * Reconcile the SAME first-Project click after its live DOM loses attributable bubbles.
+ * Use the observed canonical URL and original pre-click Project ID; no new Send.
+ */
+export async function reconcileOriginalProjectAttempt(page: Page, originalProjectId: string,
+  originalPrompt: string, observedCanonicalUrl: string): Promise<boolean> {
+  const route = /^https:\/\/chatgpt\.com\/g\/g-p-[A-Za-z0-9_-]{1,120}\/c\/([0-9a-f-]{36})$/i.exec(observedCanonicalUrl);
+  if (!/^g-p-[A-Za-z0-9_-]{1,120}$/.test(originalProjectId) || !route) return false;
+  const savedId = conversationIdFromHref(observedCanonicalUrl);
+  if (!savedId || savedId !== route[1].toLowerCase()) return false;
+  // Reuse existing first-party Project and unique saved message checks.
+  // The live post-click bubble count may be 0, 1 or 2 during React hydration.
+  const [membership, message] = await Promise.all([
+    savedConversationInOriginalProject(page, originalProjectId, savedId),
+    verifyUniqueSavedProjectTurn(page, observedCanonicalUrl, originalPrompt),
+  ]);
+  return membership && message;
 }
 
 /** Keep the same Browser Session open until this particular submitted User Turn is visible and its editor settles. */

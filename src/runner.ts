@@ -10,7 +10,7 @@ import { defaultHarnessHome, listProfiles, loadConfig, profilePaths, saveConfig 
 import { nextSupervisorDecision } from "./core/supervisor.js";
 import { ambiguousTriggerBlocked, nextAmbiguousTrigger, triggerMayHaveDispatched } from "./core/trigger-guard.js";
 import { executeRunLifecycle } from "./core/run-lifecycle.js";
-import { activeSendAttemptId, beginSendAttempt, finishSendAttempt, loadSendAttempt, sendAttemptMatchesProfile } from "./core/send-attempt.js";
+import { activeSendAttemptId, beginSendAttempt, finishSendAttempt, loadSendAttempt, observeSavedSendAttempt, sendAttemptMatchesProfile } from "./core/send-attempt.js";
 import { executeExecutionScript } from "./core/execution-script-runtime.js";
 import { reconcileRuntimeState } from "./core/runtime-status.js";
 import { buildHarnessOverviewEntry } from "./core/overview.js";
@@ -67,19 +67,30 @@ async function runProfile(name: string, action?: string, args: Record<string, un
         if (typeof id !== "string") throw new Error("No original Send attempt ID to Resume");
         const original = await loadSendAttempt(home, name, id);
         const cfg = config.adapterConfig as { conversation?: { newChatEachRun?: boolean; conversationId?: string } };
-        if (cfg.conversation?.newChatEachRun !== false
-          || !sendAttemptMatchesProfile(original, browserBinding, cfg.conversation.conversationId ?? null))
-          throw new Error("Resume original Browser Profile or Conversation no longer matches; Send remains locked");
+        const existingResume = cfg.conversation?.newChatEachRun === false
+          && sendAttemptMatchesProfile(original, browserBinding, cfg.conversation.conversationId ?? null);
+        const projectFirstResume = cfg.conversation?.newChatEachRun === true
+          && original.conversationId === null && typeof original.projectId === "string"
+          && original.browserBinding === browserBinding;
+        if (!existingResume && !projectFirstResume)
+          throw new Error("Original Send attempt does not match this Browser Profile or Conversation");
         if (original.status === "submitted") {
           await finishSendAttempt(home, name, id, "submitted");
           return {
           status: "submitted", submissionState: "submitted", attemptId: id,
-          conversationId: original.conversationId, url: `https://chatgpt.com/c/${original.conversationId}`,
+          conversationId: original.conversationId ?? new URL(original.observedUrl!).pathname.split("/").at(-1),
+          url: original.observedUrl ?? `https://chatgpt.com/c/${original.conversationId}`,
         };
         }
-        const value = await registry.execute("chatgpt", "resume", {
-          prompt: original.prompt, conversationId: original.conversationId, baseline: original.baseline,
-        }, { profileName: name, browser: session, config }) as { status: string };
+        const resumeArgs = projectFirstResume
+          ? { prompt: original.prompt, projectId: original.projectId, conversationUrl: original.observedUrl,
+              baseline: original.baseline }
+          : { prompt: original.prompt, conversationId: original.conversationId, baseline: original.baseline };
+        if (projectFirstResume && !original.observedUrl) return {
+          status: "pending", submissionState: "unknown", retryable: false, canResume: true, attemptId: id,
+        };
+        const value = await registry.execute("chatgpt", "resume", resumeArgs,
+          { profileName: name, browser: session, config }) as { status: string };
         if (value.status === "submitted") await finishSendAttempt(home, name, id, "submitted");
         return { ...value, attemptId: id };
       }
@@ -87,17 +98,31 @@ async function runProfile(name: string, action?: string, args: Record<string, un
         profileName: name, browser: session, config,
         beforeSend: actualAction === "trigger" && config.adapter === "chatgpt"
           ? async (prompt, input) => {
-            // Issue #30 targets a known saved conversation. New-chat/no-ID recovery
-            // is unsupported: do not invent a destination or mistake local IDs for saved.
-            if (!input.conversationId) return;
+            // Persist the original first-Project attempt before the only Send click.
+            // A saved canonical URL is learned only from subsequent site observation.
+            if (!input.conversationId && !input.projectId) return;
             const original = await beginSendAttempt(home, name, {
-              prompt, conversationId: input.conversationId, baseline: input.baseline, browserBinding,
+              prompt, conversationId: input.conversationId, projectId: input.projectId,
+              baseline: input.baseline, browserBinding,
             });
             attemptId = original.id;
             await writeState(name, { pendingAttemptId: attemptId });
           } : undefined,
       }) as { status?: string };
-      if (attemptId && value.status === "triggered") await finishSendAttempt(home, name, attemptId, "submitted");
+      if (attemptId && value.status === "ambiguous") {
+        const candidate = (value as { diagnostic?: { url?: string } }).diagnostic?.url;
+        if (typeof candidate === "string") {
+          // Only the observed canonical first-party route can be recovered later.
+          await observeSavedSendAttempt(home, name, attemptId, candidate).catch(() => {});
+        }
+      }
+      if (attemptId && value.status === "triggered") {
+        const original = await loadSendAttempt(home, name, attemptId);
+        const observed = (value as {url?:string}).url;
+        if (original.conversationId === null && typeof observed === "string")
+          await observeSavedSendAttempt(home, name, attemptId, observed);
+        await finishSendAttempt(home, name, attemptId, "submitted");
+      }
       return attemptId ? { ...value, attemptId } : value;
     },
     markSuccess: async (value) => {

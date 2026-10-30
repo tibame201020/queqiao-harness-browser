@@ -213,6 +213,13 @@ pre-click Project identity, baseline zero and empty Composer allow the same 12s
 read-only saved-Conversation check of exactly one unique full-matching User Turn
 and original Project membership; they do not prove either double dispatch or
 successful Send. See `ISSUE57_CANONICAL_HYDRATION_ACCEPTANCE_20261030.md`.
+**Issue #60 original first-Project Send recovery:** the Runner now persists the
+original Project and input before the one Send click even without a saved
+Conversation ID. On live UI ambiguity it reconciles the observed canonical
+saved Conversation in a separate read-only tab; a confirmed original saved
+User Turn returns the existing `triggered/submitted` so Collect can continue.
+Unconfirmed original attempts can use the existing `resume` action without a
+second Send. See `ISSUE60_ORIGINAL_ATTEMPT_ACCEPTANCE_20261030.md`.
 No extra Send or original Run replay is performed; this is a UI-only expansion.
 Observations must remain stable; if a click was possible but these predicates fail,
 the result is `ambiguous/SEND_OUTCOME_UNKNOWN`, never a safe-to-resend error.

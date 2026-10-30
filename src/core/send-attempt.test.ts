@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { beginSendAttempt, loadSendAttempt, finishSendAttempt, sendAttemptMatchesProfile, activeSendAttemptId } from "./send-attempt.js";
+import { beginSendAttempt, loadSendAttempt, finishSendAttempt, observeSavedSendAttempt, sendAttemptMatchesProfile, activeSendAttemptId } from "./send-attempt.js";
 
 const target = "11111111-1111-4111-8111-111111111111";
 const original = "SYNTHETIC_PRIVATE_ORIGINAL_RESUME_MESSAGE";
@@ -64,5 +64,41 @@ describe("private original Send attempt recovery (#30)", () => {
     await beginSendAttempt(h, "unit", { prompt: original, conversationId: target, browserBinding: binding, baseline });
     await expect(beginSendAttempt(h, "unit", { prompt: "SECOND_SEND", conversationId: target, browserBinding: binding, baseline }))
       .rejects.toThrow(/pending|unknown|unresolved/i);
+  });
+
+  it("Issue #60: durable first Project attempt exists before a canonical Conversation ID exists", async () => {
+    const h = await home();
+    const attempt = await beginSendAttempt(h,"project-first",{
+      prompt:original,conversationId:null,projectId:"g-p-original",baseline:{bubbles:0,legacy:0},browserBinding:binding,
+    });
+    expect((await loadSendAttempt(h,"project-first",attempt.id))).toMatchObject({
+      status:"unknown",conversationId:null,projectId:"g-p-original",prompt:original,
+    });
+    expect(await activeSendAttemptId(h,"project-first")).toBe(attempt.id);
+    const saved=await observeSavedSendAttempt(h,"project-first",attempt.id,
+      "https://chatgpt.com/g/g-p-canonical-alias/c/"+target);
+    expect(saved.observedUrl).toBe("https://chatgpt.com/g/g-p-canonical-alias/c/"+target);
+    expect(saved.conversationId).toBeNull(); // never backdate a not-yet-known ID.
+    await finishSendAttempt(h,"project-first",attempt.id,"submitted");
+    expect((await loadSendAttempt(h,"project-first",attempt.id)).prompt).toBe("");
+    expect(await activeSendAttemptId(h,"project-first")).toBeNull();
+  });
+  it("Issue #60: does not guess saved target, replace observed URL or allow second Send before recovery",async()=>{
+    const h=await home();
+    const a=await beginSendAttempt(h,"project-first",{
+      prompt:original,conversationId:null,projectId:"g-p-original",baseline:{bubbles:0,legacy:0},browserBinding:binding,
+    });
+    await expect(observeSavedSendAttempt(h,"project-first",a.id,
+      "https://chatgpt.com/g/g-p-other/c/local-chatgpt%3A"+target)).rejects.toThrow();
+    await expect(observeSavedSendAttempt(h,"project-first",a.id,
+      "https://evil.example/g/g-p-other/c/"+target)).rejects.toThrow();
+    await expect(beginSendAttempt(h,"project-first",{
+      prompt:"SECOND_SEND",conversationId:null,projectId:"g-p-original",
+      baseline:{bubbles:0,legacy:0},browserBinding:binding,
+    })).rejects.toThrow(/unresolved|pending/i);
+    await observeSavedSendAttempt(h,"project-first",a.id,
+      "https://chatgpt.com/g/g-p-canonical-alias/c/"+target);
+    await expect(observeSavedSendAttempt(h,"project-first",a.id,
+      "https://chatgpt.com/g/g-p-canonical-alias/c/22222222-2222-4222-8222-222222222222")).rejects.toThrow();
   });
 });
