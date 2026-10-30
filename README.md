@@ -220,6 +220,12 @@ saved Conversation in a separate read-only tab; a confirmed original saved
 User Turn returns the existing `triggered/submitted` so Collect can continue.
 Unconfirmed original attempts can use the existing `resume` action without a
 second Send. See `ISSUE60_ORIGINAL_ATTEMPT_ACCEPTANCE_20261030.md`.
+**Issue #63 existing saved-Conversation continuation:** when a fifth or later
+original Attempt cannot be attributed from transient 0/10 React User bubbles,
+read-only Resume reopens the same saved Conversation. A stable baseline + 1
+User Turn with one unique exact original last message returns `submitted`;
+otherwise the Attempt remains UNKNOWN and is never re-sent.
+See `ISSUE63_EXISTING_CONVERSATION_RESUME_ACCEPTANCE_20261030.md`.
 No extra Send or original Run replay is performed; this is a UI-only expansion.
 Observations must remain stable; if a click was possible but these predicates fail,
 the result is `ambiguous/SEND_OUTCOME_UNKNOWN`, never a safe-to-resend error.
