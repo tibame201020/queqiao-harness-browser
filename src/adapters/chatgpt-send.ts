@@ -305,9 +305,14 @@ async function verifyUniqueSavedProjectTurn(page: Page, canonicalUrl: string, pr
   try {
     probe = await page.context().newPage();
     await probe.goto(canonicalUrl, { waitUntil: "domcontentloaded", timeout: 10_000 });
-    if (safeUrl(probe).url !== canonicalUrl) return false;
+    if (safeUrl(probe).url === "unexpected-origin") return false;
+    const expectedId = conversationIdFromHref(canonicalUrl);
     const users = probe.locator(USER_BUBBLES);
     const verified = async (): Promise<boolean> => {
+      const actual = safeUrl(probe!);
+      // React can rewrite the Project route alias during read-only hydration.
+      // The saved Conversation UUID (plus original Project membership) is its identity.
+      if (actual.id !== expectedId || !/^https:\/\/chatgpt\.com\/g\/g-p-[A-Za-z0-9_-]{1,120}\/c\/[0-9a-f-]{36}$/i.test(actual.url)) return false;
       if (await users.count() !== 1) return false;
       const turn = users.first();
       const roots = turn.locator(".whitespace-pre-wrap:not(.whitespace-pre-wrap .whitespace-pre-wrap)");
