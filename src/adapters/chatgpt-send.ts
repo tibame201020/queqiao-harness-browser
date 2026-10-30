@@ -766,13 +766,24 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
     }
   };
   latest = await readLiveDraft(latest);
-  const composer = latest.composer!;
-  try {
-    await composer.click({ timeout: 3000 });
-  } catch {
-    const snapshot = (await inspect(page, "precompose", started, initialId, targetId)).state;
-    snapshot.precomposeReason = "composer_click_failed";
-    throw diagnostic("PRE_SEND_NOT_READY", snapshot);
+  // Focus is a pre-Send UI action. If the previously inspected editor is
+  // replaced mid-click, reobserve the SAME target and retry within the
+  // existing precompose readiness deadline. Never insert text before focus.
+  while (true) {
+    try {
+      await latest.composer!.click({
+        timeout: Math.min(3000, Math.max(100, 15_000 - (Date.now() - started))),
+      });
+      break;
+    } catch {
+      const observation = await inspect(page, "precompose", started, initialId, targetId);
+      if (Date.now() - started >= 15_000) {
+        observation.state.precomposeReason = "composer_click_failed";
+        throw diagnostic("PRE_SEND_NOT_READY", observation.state);
+      }
+      await page.waitForTimeout(200);
+      latest = await readLiveDraft(await inspect(page, "precompose", started, initialId, targetId));
+    }
   }
   // After focus, re-read a newly acquired live locator. Never overwrite a
   // draft that appeared during focus or treat a read exception as empty.
