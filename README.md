@@ -1,5 +1,12 @@
 # Queqiao Harness Browser
 
+## Collect pending diagnostics (Issue #72)
+
+ChatGPT `collect` returns `status: "pending"` with `partialText` when it cannot establish a stable Assistant response before `timeoutMs`. The optional non-content `diagnostic` describes its last observed condition, not a proven underlying cause: `pendingReason` (`NO_ASSISTANT_MESSAGE`, `EMPTY_ASSISTANT_TEXT`, `GENERATION_ACTIVE`, `UNSTABLE_MESSAGE_COUNT`, `UNSTABLE_TEXT`, `SETTLE_WINDOW_NOT_MET`), `assistantCount`, `hasText`, `generating`, `elapsedMs`, `timeoutMs`, `settleMs`, `stablePasses`, and `stableDurationMs`.
+
+Opt-in `collect` input: `diagnostics: { "captureOnPending": true }` (default false). On `pending`, the Runner captures the actual Run-owned page before closing it. Only `diagnostic.failureScreenshot: {status:"saved",file:"collect-pending-<UUID>.png"}` or `{status:"capture_failed"}` is returned. Bytes are stored in the Harness profile's private `private-diagnostics/` directory with restricted creation permissions, never transmitted as standard JSON. Files may contain conversation/account data: inspect locally and manually remove them when no longer needed. A capture error never changes the Collect outcome. Each CDP Run opens an independent tab; actual concurrency behavior beyond this lifecycle is environment-dependent.
+
+
 Worker-side browser harness runtime for Queqiao. The core owns browser/profile lifecycle, scheduling and state; site behavior lives in adapters. Queqiao/MCP business logic is not embedded in harness profiles.
 
 ## Mental model

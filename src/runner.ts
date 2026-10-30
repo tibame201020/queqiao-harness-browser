@@ -7,6 +7,7 @@ import { normalizeHarnessConfig } from "./core/config.js";
 import { bootstrapClose, bootstrapOpen } from "./core/bootstrap.js";
 import { openBrowserSession } from "./core/session.js";
 import { captureComposerAbsentFailure } from "./core/failure-screenshot.js";
+import { capturePendingCollectScreenshot } from "./core/collect-diagnostics.js";
 import { defaultHarnessHome, listProfiles, loadConfig, profilePaths, saveConfig } from "./core/store.js";
 import { nextSupervisorDecision } from "./core/supervisor.js";
 import { ambiguousTriggerBlocked, nextAmbiguousTrigger, triggerMayHaveDispatched } from "./core/trigger-guard.js";
@@ -114,7 +115,10 @@ async function runProfile(name: string, action?: string, args: Record<string, un
       // Read this Run-owned page once before lifecycle closes it.
       const value = actualAction === "trigger" && config.adapter === "chatgpt"
         ? await captureComposerAbsentFailure(session.page, home, name, siteValue)
-        : siteValue;
+        : actualAction === "collect" && config.adapter === "chatgpt"
+          ? await capturePendingCollectScreenshot(session.page, home, name, siteValue,
+            (args.diagnostics as {captureOnPending?:boolean}|undefined)?.captureOnPending===true)
+          : siteValue;
       if (attemptId && value.status === "ambiguous") {
         const candidate = (value as { diagnostic?: { url?: string } }).diagnostic?.url;
         if (typeof candidate === "string") {
