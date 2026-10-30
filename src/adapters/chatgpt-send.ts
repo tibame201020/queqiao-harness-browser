@@ -63,6 +63,43 @@ type PostClickTurnEvidence = {
   samples: { bubbles: number; legacy: number; correctTarget: boolean; editorEmpty: boolean; generationActive: boolean }[];
 };
 
+type DomReadinessSample = {
+  readyState: "loading" | "interactive" | "complete" | "unknown";
+  mainCount: number;
+  rawComposerCount: number;
+  rawEditableTextboxCount: number;
+  bodyChildCount: number;
+  documentVisibility: "visible" | "hidden" | "unknown";
+};
+
+// Fixed-schema numeric/enum-only facts from the original run-owned page.
+// Never read page text, cookies, local storage or user-controlled DOM content.
+async function readDomReadiness(page: Page): Promise<DomReadinessSample> {
+  try {
+    const observed = await page.evaluate(() => ({
+      readyState: document.readyState,
+      mainCount: document.querySelectorAll("main").length,
+      rawComposerCount: document.querySelectorAll("#prompt-textarea").length,
+      rawEditableTextboxCount: document.querySelectorAll('[role="textbox"][contenteditable="true"]').length,
+      bodyChildCount: document.body?.children.length ?? 0,
+      documentVisibility: document.visibilityState,
+    }));
+    return {
+      readyState: ["loading","interactive","complete"].includes(observed.readyState)
+        ? observed.readyState as DomReadinessSample["readyState"] : "unknown",
+      mainCount: Math.max(0, Math.min(1000, observed.mainCount)),
+      rawComposerCount: Math.max(0, Math.min(1000, observed.rawComposerCount)),
+      rawEditableTextboxCount: Math.max(0, Math.min(1000, observed.rawEditableTextboxCount)),
+      bodyChildCount: Math.max(0, Math.min(1000, observed.bodyChildCount)),
+      documentVisibility: observed.documentVisibility === "visible" || observed.documentVisibility === "hidden"
+        ? observed.documentVisibility : "unknown",
+    };
+  } catch {
+    return { readyState:"unknown", mainCount:-1, rawComposerCount:-1,
+      rawEditableTextboxCount:-1, bodyChildCount:-1, documentVisibility:"unknown" };
+  }
+}
+
 type Readiness = {
   stage: Stage;
   elapsedMs: number;
@@ -75,7 +112,8 @@ type Readiness = {
   composerEditable: boolean;
   promptPresent: boolean | null;
   promptIntegrity: "complete" | "empty" | "truncated" | "mismatch" | "unverifiable" | null;
-  precomposeReason: "draft_present" | "editor_read_failed" | "composer_click_failed" | null;
+  precomposeReason: "draft_present" | "editor_read_failed" | "composer_click_failed" | "composer_absent" | null;
+  domReadiness?: { initial: DomReadinessSample; terminal: DomReadinessSample };
   sendSelector: SendSelection["selector"];
   sendMatches: number;
   sendVisibleMatches: number;
@@ -725,10 +763,17 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
     .exec(initialLocation.url)?.[1];
   const targetId = expectedId ?? null;
   let latest = await inspect(page, "precompose", started, initialId, targetId);
+  const initialDom = await readDomReadiness(page);
+  const precomposeFailure = async (state: Readiness, reason: Readiness["precomposeReason"]) => {
+    state.precomposeReason = reason;
+    state.domReadiness = {initial:initialDom, terminal:await readDomReadiness(page)};
+    return diagnostic("PRE_SEND_NOT_READY",state);
+  };
   // Poll a bounded predicate, never use a blind fixed sleep to guess generation readiness.
   while (!(latest.state.sameTarget && !latest.state.generationActive
     && latest.state.composerMatches === 1 && latest.state.composerVisible && latest.state.composerEditable)) {
-    if (Date.now() - started >= 15_000) throw diagnostic("PRE_SEND_NOT_READY", latest.state);
+    if (Date.now() - started >= 15_000) throw await precomposeFailure(latest.state,
+      latest.state.composerMatches === 0 ? "composer_absent" : null);
     await page.waitForTimeout(200);
     latest = await inspect(page, "precompose", started, initialId, targetId);
   }
@@ -758,8 +803,8 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
         }
       }
       if (Date.now() - started >= 15_000) {
-        current.state.precomposeReason = "editor_read_failed";
-        throw diagnostic("PRE_SEND_NOT_READY", current.state);
+        throw await precomposeFailure(current.state,
+          current.state.composerMatches === 0 ? "composer_absent" : "editor_read_failed");
       }
       await page.waitForTimeout(200);
       current = await inspect(page, "precompose", started, initialId, targetId);
@@ -778,8 +823,7 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
     } catch {
       const observation = await inspect(page, "precompose", started, initialId, targetId);
       if (Date.now() - started >= 15_000) {
-        observation.state.precomposeReason = "composer_click_failed";
-        throw diagnostic("PRE_SEND_NOT_READY", observation.state);
+        throw await precomposeFailure(observation.state, "composer_click_failed");
       }
       await page.waitForTimeout(200);
       latest = await readLiveDraft(await inspect(page, "precompose", started, initialId, targetId));
