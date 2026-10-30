@@ -10,7 +10,7 @@ function fixture(opt:Opt={}){
   const actions:string[]=[];
   const stored = Array.from({length:5},(_,i)=>i===4?prompt:"PREVIOUS_UNIQUE_SYNTHETIC_USER_"+i);
   if(opt.wrongText) stored[4]="INCORRECT_SUBMITTED_INPUT";
-  if(opt.duplicateMatching) stored[1]=prompt;
+  if(opt.duplicateMatching) stored[5]=prompt;
   let probeUrl=savedUrl;
   const content=(i:number)=>({
     locator:vi.fn((selector:string)=>{
@@ -26,8 +26,8 @@ function fixture(opt:Opt={}){
     url:vi.fn(()=>probeUrl),
     locator:vi.fn((selector:string)=>{
       if(selector==='[data-user-message-bubble="true"]'){
-        const count=()=>opt.neverSettles?10:opt.persistedCount??([0,10,5,5,5][Math.min(savedPoll,4)]);
-        return {count:vi.fn(async()=>count()),first:vi.fn(()=>content(0)),nth:vi.fn((i:number)=>content(i))};
+        const count=()=>opt.neverSettles?10:opt.duplicateMatching?6:opt.persistedCount??([0,10,5,5,5][Math.min(savedPoll,4)]);
+        return {count:vi.fn(async()=>count()),evaluateAll:vi.fn(async()=>Array.from({length:count()},(_,i)=>{const n=opt.neverSettles?i%5+1:i<4?i+1:i+5;return String(n).padStart(8,'0')+'-1111-4111-8111-111111111111'})),first:vi.fn(()=>content(0)),nth:vi.fn((i:number)=>content(i))};
       }
       if(selector==='[data-message-author-role="user"]')return {count:vi.fn(async()=>0)};
       throw Error("Unexpected saved probe selector: "+selector);
@@ -61,7 +61,7 @@ describe("Issue #63 same-saved-Conversation fifth continuation",()=>{
     let clock=0;vi.spyOn(Date,"now").mockImplementation(()=>{clock+=800;return clock;});
     const f=fixture(opt);
     const result=await chatgptAdapter.execute("resume",{
-      conversationId:id,prompt,baseline:{bubbles:4,legacy:0},
+      conversationId:id,prompt,baseline:{bubbles:4,legacy:0,messageIds:Array.from({length:4},(_,i)=>String(i+1).padStart(8,'0')+'-1111-4111-8111-111111111111')},
     },{browser:{page:f.original}});
     return {f,result};
   }
@@ -73,7 +73,7 @@ describe("Issue #63 same-saved-Conversation fifth continuation",()=>{
     expect(f.original.keyboard.insertText).not.toHaveBeenCalled();
   });
   it.each([
-    {wrongText:true},{wrongId:true},{foreignOrigin:true},{persistedCount:6},
+    {wrongText:true},{wrongId:true},{foreignOrigin:true},
     {duplicateMatching:true},{neverSettles:true},
   ])("does not submit wrong, foreign, duplicate or unsettled persisted transcript: %j",async options=>{
     const {f,result}=await resume(options);

@@ -227,7 +227,7 @@ export function firstChatProjectReceiptUrl(raw: string, conversationId: string):
 }
 
 async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>,
-  beforeSend?: (prompt: string, input: { conversationId: string | null; projectId?: string; baseline: { bubbles: number; legacy: number } }) => Promise<void>) {
+  beforeSend?: (prompt: string, input: { conversationId: string | null; projectId?: string; observedUrl?: string; baseline: { bubbles: number; legacy: number; messageIds?: string[] } }) => Promise<void>) {
   cfg = selectChatGptTriggerConfig(cfg, args);
   const runtimeTargetUrl = typeof args.conversationUrl === "string" ? args.conversationUrl : undefined;
   const prompt = String(args.prompt || cfg.trigger.prompt || "");
@@ -243,7 +243,11 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
     started = await sendChatGptPrompt(page, prompt, cfg.conversation.newChatEachRun ? undefined : cfg.conversation.conversationId,
       beforeSend ? baseline => beforeSend(prompt, {
         conversationId: cfg.conversation.newChatEachRun ? null : cfg.conversation.conversationId!,
-        projectId, baseline,
+        projectId,
+        observedUrl: !cfg.conversation.newChatEachRun
+          ? firstChatProjectReceiptUrl(page.url(), cfg.conversation.conversationId!) ?? undefined
+          : undefined,
+        baseline,
       }) : undefined);
   } catch (error) {
     if (!(error instanceof ChatGptSendError)) throw error;
@@ -294,7 +298,7 @@ async function resumeSend(session: BrowserSession, args: Record<string, unknown>
       projectId: z.string().regex(/^g-p-[A-Za-z0-9_-]{1,120}$/),
       conversationUrl: z.string().url(),
       prompt: z.string().min(1),
-      baseline: z.object({ bubbles: z.number().int().min(0), legacy: z.number().int().min(0) }),
+      baseline: z.object({ bubbles: z.number().int().min(0), legacy: z.number().int().min(0), messageIds: z.array(z.string().uuid()).optional() }),
     }).strict().parse(args);
     const saved = parseCanonicalConversationUrl(input.conversationUrl);
     if (!saved || !/\/g\/g-p-[A-Za-z0-9_-]+\/c\//i.test(saved.conversationUrl)) return {
@@ -309,9 +313,13 @@ async function resumeSend(session: BrowserSession, args: Record<string, unknown>
   const input = z.object({
     conversationId: conversationIdSchema,
     prompt: z.string().min(1),
-    baseline: z.object({ bubbles: z.number().int().min(0), legacy: z.number().int().min(0) }),
+    observedUrl: z.string().url().optional(),
+    baseline: z.object({ bubbles: z.number().int().min(0), legacy: z.number().int().min(0), messageIds: z.array(z.string().uuid()).optional() }),
   }).strict().parse(args);
-  const url = `https://chatgpt.com/c/${input.conversationId}`;
+  if (input.observedUrl && !firstChatProjectReceiptUrl(input.observedUrl, input.conversationId)) return {
+    status: "pending", submissionState: "unknown", retryable: false, canResume: true,
+  };
+  const url = input.observedUrl ?? `https://chatgpt.com/c/${input.conversationId}`;
   let navigated = false;
   const page = session.page;
   try {
