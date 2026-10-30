@@ -240,6 +240,11 @@ and after focus. Real preexisting drafts still stop Send; exactly one Send is
 performed when ready. A distinct first-Project #60 investigation compares
 confirmed source and observed site behavior without adding governance gates.
 See `ISSUE66_COMPOSER_READ_RETRY_AND_ISSUE60_PROJECT_REGRESSION_20261030.md`.
+**Issue #68 focus retry (v0.5.15):** if the verified ChatGPT Composer
+fails its pre-Send focus click, reacquire the live editor and recheck its
+actual draft on the original saved Conversation, within the existing
+precompose readiness window. No second Send or governance extension.
+See `ISSUE68_COMPOSER_FOCUS_RETRY_20261030.md`.
 No extra Send or original Run replay is performed; this is a UI-only expansion.
 Observations must remain stable; if a click was possible but these predicates fail,
 the result is `ambiguous/SEND_OUTCOME_UNKNOWN`, never a safe-to-resend error.

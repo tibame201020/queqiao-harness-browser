@@ -171,7 +171,7 @@ function fixture(opts: { legacy?: boolean; plugin?: boolean; resume?: boolean; s
     url: vi.fn(() => url),
     context: vi.fn(() => ({ newPage: vi.fn(async () => (++probeCount === 1 ? memberPage : readbackPage)) })),
   };
-  return { page, calls, send, composer, form, userTurnsLocator, get polls() { return polls; } };
+  return { page, calls, send, composer, form, stop, userTurnsLocator, get polls() { return polls; } };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -242,6 +242,76 @@ describe("ChatGPT composer compatibility", () => {
     expect(JSON.stringify(outcome)).not.toContain(original);
   });
 
+  it("Issue #68 RED: one focus click failure with temporary missing editor reacquires and sends once", async () => {
+    const f = fixture({resume:true,siteBubble:true});
+    const beforeSend = vi.fn(async () => undefined);
+    f.composer.click.mockImplementationOnce(async () => {
+      f.calls.push("focus-failed");
+      f.composer.count.mockResolvedValueOnce(0);
+      throw Error("one transient editor focus failure");
+    });
+    const result = await chatgptAdapter.execute("trigger", {prompt:"ISSUE68_SYNTHETIC_FOCUS_RECOVERED"}, {
+      browser:{page:f.page},
+      config:{adapterConfig:{conversation:{newChatEachRun:false,conversationId:ID}}},
+      beforeSend,
+    });
+    expect(result).toMatchObject({status:"triggered",submissionState:"submitted"});
+    expect(f.composer.click).toHaveBeenCalledTimes(2);
+    expect(beforeSend).toHaveBeenCalledOnce();
+    expect(f.page.keyboard.insertText).toHaveBeenCalledOnce();
+    expect(f.calls.filter(x=>x==="send")).toHaveLength(1);
+  });
+  it("Issue #68: a real external draft appearing during failed focus must stay untouched",async()=>{
+    const f=fixture({resume:true,siteBubble:true});
+    f.composer.click.mockImplementationOnce(async()=>{
+      f.composer.innerText.mockResolvedValue("EXTERNAL_DRAFT_AFTER_FOCUS");
+      f.composer.textContent.mockResolvedValue("EXTERNAL_DRAFT_AFTER_FOCUS");
+      throw Error("transient focus error");
+    });
+    const beforeSend=vi.fn();
+    const result=await chatgptAdapter.execute("trigger",{prompt:"ISSUE68_NOT_AN_OVERWRITE"},{
+      browser:{page:f.page},config:{adapterConfig:{conversation:{newChatEachRun:false,conversationId:ID}}},beforeSend});
+    expect(result).toMatchObject({status:"unavailable",submissionState:"not_sent",diagnostic:{precomposeReason:"draft_present"}});
+    expect(beforeSend).not.toHaveBeenCalled();
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.calls.filter(x=>x==="send")).toHaveLength(0);
+  });
+  it("Issue #68: wrong saved Conversation after failed focus does not receive text",async()=>{
+    const f=fixture({resume:true,siteBubble:true});
+    f.composer.click.mockImplementationOnce(async()=>{
+      f.page.url.mockReturnValue("https://chatgpt.com/c/22222222-2222-4222-8222-222222222222");
+      throw Error("navigation during focus");
+    });
+    const result=await chatgptAdapter.execute("trigger",{prompt:"ISSUE68_WRONG_TARGET_NOT_SENT"},{
+      browser:{page:f.page},config:{adapterConfig:{conversation:{newChatEachRun:false,conversationId:ID}}}});
+    expect(result).toMatchObject({status:"unavailable",submissionState:"not_sent"});
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.calls.filter(x=>x==="send")).toHaveLength(0);
+  });
+  it("Issue #68: persistent focus failure stays not_sent without any original Attempt",async()=>{
+    const f=fixture({resume:true,siteBubble:true});
+    f.composer.click.mockRejectedValue(Error("editor never focusable"));
+    const beforeSend=vi.fn();
+    const result=await chatgptAdapter.execute("trigger",{prompt:"ISSUE68_NO_DISPATCH"},{
+      browser:{page:f.page},config:{adapterConfig:{conversation:{newChatEachRun:false,conversationId:ID}}},beforeSend});
+    expect(result).toMatchObject({status:"unavailable",submissionState:"not_sent",diagnostic:{precomposeReason:"composer_click_failed"}});
+    expect(f.composer.click.mock.calls.length).toBeGreaterThan(1);
+    expect(beforeSend).not.toHaveBeenCalled();
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.calls.filter(x=>x==="send")).toHaveLength(0);
+  });
+  it("Issue #68: generation becoming active after failed focus does not dispatch",async()=>{
+    const f=fixture({resume:true,siteBubble:true});
+    f.composer.click.mockImplementationOnce(async()=>{
+      f.stop.isVisible.mockResolvedValue(true);
+      throw Error("focus replaced while model started");
+    });
+    const result=await chatgptAdapter.execute("trigger",{prompt:"ISSUE68_GENERATION_ACTIVE"},{
+      browser:{page:f.page},config:{adapterConfig:{conversation:{newChatEachRun:false,conversationId:ID}}}});
+    expect(result).toMatchObject({status:"unavailable",submissionState:"not_sent"});
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.calls.filter(x=>x==="send")).toHaveLength(0);
+  });
   it("Issue #66 RED: one transient pre-focus read error retries existing Composer and sends only once", async () => {
     const f = fixture({ resume: true, siteBubble: true });
     f.composer.innerText.mockRejectedValueOnce(new Error("one transient editor read failure"));
