@@ -7,7 +7,7 @@ import {
   conversationIdFromHref,
   initialAssistantCollectState,
 } from "./chatgpt.js";
-import { ChatGptSendError, isChatGptGenerationActive, postClickAmbiguity, reconcileChatGptSend, sendChatGptPrompt } from "./chatgpt-send.js";
+import { ChatGptSendError, isChatGptGenerationActive, postClickAmbiguity, reconcileChatGptSend, reconcileOriginalProjectAttempt, sendChatGptPrompt } from "./chatgpt-send.js";
 import { deleteConversation, listProjectConversations, listProjects, openConversation, openProject, startProjectNewConversation } from "./chatgpt-projects.js";
 
 const conversationIdSchema = z.string().uuid();
@@ -227,7 +227,7 @@ export function firstChatProjectReceiptUrl(raw: string, conversationId: string):
 }
 
 async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args: Record<string, unknown>,
-  beforeSend?: (prompt: string, input: { conversationId: string | null; baseline: { bubbles: number; legacy: number } }) => Promise<void>) {
+  beforeSend?: (prompt: string, input: { conversationId: string | null; projectId?: string; baseline: { bubbles: number; legacy: number } }) => Promise<void>) {
   cfg = selectChatGptTriggerConfig(cfg, args);
   const runtimeTargetUrl = typeof args.conversationUrl === "string" ? args.conversationUrl : undefined;
   const prompt = String(args.prompt || cfg.trigger.prompt || "");
@@ -235,12 +235,28 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
 
   const target = await prepareTriggerTarget(session, cfg, runtimeTargetUrl);
   const page = session.page;
+  const projectId = target.projectId ?? (cfg.project.enabled && cfg.conversation.newChatEachRun
+    ? /^https:\/\/chatgpt\.com\/g\/(g-p-[A-Za-z0-9_-]{1,120})\/project$/.exec(page.url())?.[1]
+    : undefined);
   let started: number;
   try {
     started = await sendChatGptPrompt(page, prompt, cfg.conversation.newChatEachRun ? undefined : cfg.conversation.conversationId,
-      beforeSend ? baseline => beforeSend(prompt, { conversationId: cfg.conversation.newChatEachRun ? null : cfg.conversation.conversationId!, baseline }) : undefined);
+      beforeSend ? baseline => beforeSend(prompt, {
+        conversationId: cfg.conversation.newChatEachRun ? null : cfg.conversation.conversationId!,
+        projectId, baseline,
+      }) : undefined);
   } catch (error) {
     if (!(error instanceof ChatGptSendError)) throw error;
+    // The original one-click attempt may already have a saved canonical destination.
+    // Re-open that SAME Conversation read-only instead of adding another live DOM gate.
+    if (error.code === "DISPATCH_AMBIGUOUS" && projectId) {
+      const saved = parseCanonicalConversationUrl(error.diagnostic.url);
+      if (saved && /\/g\/g-p-[A-Za-z0-9_-]+\/c\//i.test(error.diagnostic.url)
+        && await reconcileOriginalProjectAttempt(page, projectId, prompt, saved.conversationUrl)) {
+        return { status: "triggered", submissionState: "submitted",
+          url: saved.conversationUrl, conversationId: saved.conversationId };
+      }
+    }
     return error.code === "DISPATCH_AMBIGUOUS"
       ? { status: "ambiguous", submissionState: "unknown", reason: "SEND_OUTCOME_UNKNOWN", retryable: false, diagnostic: error.diagnostic }
       : { status: "unavailable", submissionState: "not_sent", reason: "PRE_SEND_NOT_READY", retryable: true, diagnostic: error.diagnostic };
@@ -264,13 +280,32 @@ async function trigger(session: BrowserSession, cfg: ChatGptAdapterConfig, args:
   if (!conversationId || (!cfg.conversation.newChatEachRun && conversationId !== cfg.conversation.conversationId)) return notConfirmed();
   // Project alias success is proven in sendChatGptPrompt by exact Turn and read-only membership.
   // Return the saved canonical route observed by the site, not a synthetic pre-click Project route.
-  const url = target.projectId ? firstChatProjectReceiptUrl(transientUrl, conversationId) : transientUrl;
+  const url = projectId ? firstChatProjectReceiptUrl(transientUrl, conversationId) : transientUrl;
   if (!url) return notConfirmed();
   return { status: "triggered", submissionState: "submitted", url, conversationId };
 }
 
 // The Runner supplies this original receipt from private local storage.
 async function resumeSend(session: BrowserSession, args: Record<string, unknown>) {
+  // First-Project attempts have no known Conversation ID BEFORE the click.
+  // Their original Project and observed saved URL are durable private attempt state.
+  if (args.projectId !== undefined || args.conversationUrl !== undefined) {
+    const input = z.object({
+      projectId: z.string().regex(/^g-p-[A-Za-z0-9_-]{1,120}$/),
+      conversationUrl: z.string().url(),
+      prompt: z.string().min(1),
+      baseline: z.object({ bubbles: z.number().int().min(0), legacy: z.number().int().min(0) }),
+    }).strict().parse(args);
+    const saved = parseCanonicalConversationUrl(input.conversationUrl);
+    if (!saved || !/\/g\/g-p-[A-Za-z0-9_-]+\/c\//i.test(saved.conversationUrl)) return {
+      status: "pending", submissionState: "unknown", retryable: false, canResume: true,
+    };
+    const confirmed = await reconcileOriginalProjectAttempt(session.page, input.projectId, input.prompt, saved.conversationUrl);
+    return confirmed
+      ? { status: "submitted", submissionState: "submitted",
+        conversationId: saved.conversationId, url: saved.conversationUrl }
+      : { status: "pending", submissionState: "unknown", retryable: false, canResume: true };
+  }
   const input = z.object({
     conversationId: conversationIdSchema,
     prompt: z.string().min(1),
