@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeHarnessConfig } from "./core/config.js";
 import { bootstrapClose, bootstrapOpen } from "./core/bootstrap.js";
 import { openBrowserSession } from "./core/session.js";
+import { captureComposerAbsentFailure } from "./core/failure-screenshot.js";
 import { defaultHarnessHome, listProfiles, loadConfig, profilePaths, saveConfig } from "./core/store.js";
 import { nextSupervisorDecision } from "./core/supervisor.js";
 import { ambiguousTriggerBlocked, nextAmbiguousTrigger, triggerMayHaveDispatched } from "./core/trigger-guard.js";
@@ -95,7 +96,7 @@ async function runProfile(name: string, action?: string, args: Record<string, un
         if (value.status === "submitted") await finishSendAttempt(home, name, id, "submitted");
         return { ...value, attemptId: id };
       }
-      const value = await registry.execute(config.adapter, actualAction, args, {
+      const siteValue = await registry.execute(config.adapter, actualAction, args, {
         profileName: name, browser: session, config,
         beforeSend: actualAction === "trigger" && config.adapter === "chatgpt"
           ? async (prompt, input) => {
@@ -109,7 +110,11 @@ async function runProfile(name: string, action?: string, args: Record<string, un
             attemptId = original.id;
             await writeState(name, { pendingAttemptId: attemptId });
           } : undefined,
-      }) as { status?: string };
+      }) as { status?: string; submissionState?: string; diagnostic?: { precomposeReason?: string | null; [key: string]: unknown } };
+      // Read this Run-owned page once before lifecycle closes it.
+      const value = actualAction === "trigger" && config.adapter === "chatgpt"
+        ? await captureComposerAbsentFailure(session.page, home, name, siteValue)
+        : siteValue;
       if (attemptId && value.status === "ambiguous") {
         const candidate = (value as { diagnostic?: { url?: string } }).diagnostic?.url;
         if (typeof candidate === "string") {
