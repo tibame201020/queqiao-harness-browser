@@ -242,6 +242,71 @@ describe("ChatGPT composer compatibility", () => {
     expect(JSON.stringify(outcome)).not.toContain(original);
   });
 
+  it("Issue #66 RED: one transient pre-focus read error retries existing Composer and sends only once", async () => {
+    const f = fixture({ resume: true, siteBubble: true });
+    f.composer.innerText.mockRejectedValueOnce(new Error("one transient editor read failure"));
+    const beforeSend = vi.fn(async () => undefined);
+    const result = await chatgptAdapter.execute("trigger", { prompt: "ISSUE66_SYNTHETIC_RECOVERED_EMPTY_EDITOR" }, {
+      browser: { page: f.page },
+      config: { adapterConfig: { conversation: { newChatEachRun: false, conversationId: ID } } },
+      beforeSend,
+    });
+    expect(result).toMatchObject({ status: "triggered", submissionState: "submitted" });
+    expect(f.composer.innerText.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(beforeSend).toHaveBeenCalledOnce();
+    expect(f.page.keyboard.insertText).toHaveBeenCalledOnce();
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it("Issue #66: one transient textContent read error also retries without overwriting anything", async () => {
+    const f = fixture({ resume: true, siteBubble: true });
+    f.composer.textContent.mockRejectedValueOnce(new Error("temporary content read failure"));
+    const result = await chatgptAdapter.execute("trigger", { prompt: "ISSUE66_SYNTHETIC_TEXTCONTENT_RECOVERY" }, {
+      browser: { page: f.page }, config: { adapterConfig: { conversation: { newChatEachRun: false, conversationId: ID } } },
+    });
+    expect(result).toMatchObject({ status: "triggered" });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+  });
+
+  it("Issue #66 RED: one transient post-focus read error retries live editor without a second click", async () => {
+    const f = fixture({ resume: true, siteBubble: true });
+    f.composer.innerText.mockResolvedValueOnce("").mockRejectedValueOnce(new Error("focus remount")).mockResolvedValue("");
+    const result = await chatgptAdapter.execute("trigger", { prompt: "ISSUE66_SYNTHETIC_FOCUSED_EDITOR" }, {
+      browser: { page: f.page }, config: { adapterConfig: { conversation: { newChatEachRun: false, conversationId: ID } } },
+    });
+    expect(result).toMatchObject({ status: "triggered" });
+    expect(f.calls.filter(x => x === "send")).toHaveLength(1);
+    expect(f.page.keyboard.insertText).toHaveBeenCalledOnce();
+  });
+
+  it("Issue #66: a real draft appearing after a transient error is not overwritten", async () => {
+    const f = fixture({ resume: true, siteBubble: true });
+    f.composer.innerText.mockRejectedValueOnce(new Error("transient read"))
+      .mockResolvedValueOnce("EXTERNAL_REAL_DRAFT");
+    const beforeSend = vi.fn();
+    const result = await chatgptAdapter.execute("trigger", { prompt: "ISSUE66_DO_NOT_OVERWRITE" }, {
+      browser: { page: f.page }, config: { adapterConfig: { conversation: { newChatEachRun: false, conversationId: ID } } },
+      beforeSend,
+    });
+    expect(result).toMatchObject({ status: "unavailable", submissionState: "not_sent",
+      diagnostic: { precomposeReason: "draft_present" } });
+    expect(beforeSend).not.toHaveBeenCalled();
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.calls.filter(x => x === "send")).toHaveLength(0);
+  });
+
+  it("Issue #66: persistent editor read failure still ends before any Send", async () => {
+    const f = fixture({ resume: true, siteBubble: true });
+    f.composer.innerText.mockRejectedValue(new Error("still unreadable"));
+    const result = await chatgptAdapter.execute("trigger", { prompt: "ISSUE66_NO_UNVERIFIED_SEND" }, {
+      browser: { page: f.page }, config: { adapterConfig: { conversation: { newChatEachRun: false, conversationId: ID } } },
+    });
+    expect(result).toMatchObject({ status: "unavailable", submissionState: "not_sent",
+      diagnostic: { precomposeReason: "editor_read_failed" } });
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.calls.filter(x => x === "send")).toHaveLength(0);
+  });
+
   it("never records a possible Send for an unrelated preexisting draft (#30)", async () => {
     const f = fixture({ resume: true, siteBubble: true, initialDraft: "EXTERNAL_USER_DRAFT" });
     const beforeSend = vi.fn();

@@ -732,19 +732,40 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
     await page.waitForTimeout(200);
     latest = await inspect(page, "precompose", started, initialId, targetId);
   }
-  // A nonempty draft is not ours to overwrite. The previous 15s precompose wait did not resolve #20.
-  const draftState = async (editor: Locator): Promise<Readiness["precomposeReason"]> => {
-    try {
-      const [rendered, raw] = await Promise.all([editor.innerText(), editor.textContent()]);
-      return typeof rendered === "string" && typeof raw === "string"
-        ? (rendered.trim() || raw.trim() ? "draft_present" : null) : "editor_read_failed";
-    } catch { return "editor_read_failed"; }
+  // A transient content read can fail while React replaces an otherwise valid editor.
+  // Reacquire the live editor in the existing readiness window. A real draft
+  // still stops immediately; a failed read never means an empty draft.
+  const readLiveDraft = async (initial: typeof latest): Promise<typeof latest> => {
+    let current = initial;
+    while (true) {
+      if (current.state.sameTarget && !current.state.generationActive
+        && current.state.composerMatches === 1 && current.state.composerVisible && current.state.composerEditable
+        && current.composer) {
+        try {
+          const [rendered, raw] = await Promise.all([
+            current.composer.innerText({ timeout: 1_000 }), current.composer.textContent({ timeout: 1_000 }),
+          ]);
+          if (typeof rendered === "string" && typeof raw === "string") {
+            if (rendered.trim() || raw.trim()) {
+              current.state.precomposeReason = "draft_present";
+              throw diagnostic("PRE_SEND_NOT_READY", current.state);
+            }
+            return current;
+          }
+        } catch (error) {
+          // Only browser read errors are transient. Preserve the known draft failure.
+          if (error instanceof ChatGptSendError) throw error;
+        }
+      }
+      if (Date.now() - started >= 15_000) {
+        current.state.precomposeReason = "editor_read_failed";
+        throw diagnostic("PRE_SEND_NOT_READY", current.state);
+      }
+      await page.waitForTimeout(200);
+      current = await inspect(page, "precompose", started, initialId, targetId);
+    }
   };
-  const reason = await draftState(latest.composer!);
-  if (reason) {
-    latest.state.precomposeReason = reason;
-    throw diagnostic("PRE_SEND_NOT_READY", latest.state);
-  }
+  latest = await readLiveDraft(latest);
   const composer = latest.composer!;
   try {
     await composer.click({ timeout: 3000 });
@@ -753,14 +774,9 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
     snapshot.precomposeReason = "composer_click_failed";
     throw diagnostic("PRE_SEND_NOT_READY", snapshot);
   }
-  // Revalidate after focus: a newly appearing draft or navigation cannot receive our text.
-  const focused = await inspect(page, "precompose", started, initialId, targetId);
-  const focusedReason = await draftState(composer);
-  if (focusedReason || !focused.state.sameTarget || focused.state.generationActive
-    || focused.state.composerMatches !== 1 || !focused.state.composerVisible || !focused.state.composerEditable) {
-    focused.state.precomposeReason = focusedReason;
-    throw diagnostic("PRE_SEND_NOT_READY", focused.state);
-  }
+  // After focus, re-read a newly acquired live locator. Never overwrite a
+  // draft that appeared during focus or treat a read exception as empty.
+  await readLiveDraft(await inspect(page, "precompose", started, initialId, targetId));
   try {
     await page.keyboard.insertText(prompt);
   } catch {

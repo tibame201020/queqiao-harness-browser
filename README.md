@@ -233,6 +233,13 @@ with matching complete input. Transient `baseline + 1` DOM counts do not determi
 success for new ID-backed attempts; Resume uses the actual original Project
 Conversation route. No named round, extra Send, approval or governance layer.
 See `ISSUE63_PERSISTED_MESSAGE_ID_ACCEPTANCE_20261030.md`.
+**Issue #66 Composer readiness (v0.5.14):** transient failures reading
+`innerText()` or `textContent()` on an otherwise ready ChatGPT editor retry
+by reacquiring the live Composer within the existing precompose window, before
+and after focus. Real preexisting drafts still stop Send; exactly one Send is
+performed when ready. A distinct first-Project #60 investigation compares
+confirmed source and observed site behavior without adding governance gates.
+See `ISSUE66_COMPOSER_READ_RETRY_AND_ISSUE60_PROJECT_REGRESSION_20261030.md`.
 No extra Send or original Run replay is performed; this is a UI-only expansion.
 Observations must remain stable; if a click was possible but these predicates fail,
 the result is `ambiguous/SEND_OUTCOME_UNKNOWN`, never a safe-to-resend error.
