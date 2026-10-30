@@ -206,6 +206,13 @@ Project Send, a strongly correlated folded prefix and empty Composer can extend
 control, a failed expansion or mismatched expanded text never confirms Send:
 full source equality, canonical ID and original Project membership are still
 mandatory. See `ISSUE55_FOLDED_PROJECT_ACCEPTANCE_20261030.md`.
+A first-Project Send can also navigate to a canonical saved URL while React remounts
+its User bubbles as `0→2→0→1`. Only the canonical first-party Project route,
+pre-click Project identity, baseline zero and empty Composer allow the same 12s
+**observation-only** ceiling. Transient two-bubble observations require a separate
+read-only saved-Conversation check of exactly one unique full-matching User Turn
+and original Project membership; they do not prove either double dispatch or
+successful Send. See `ISSUE57_CANONICAL_HYDRATION_ACCEPTANCE_20261030.md`.
 No extra Send or original Run replay is performed; this is a UI-only expansion.
 Observations must remain stable; if a click was possible but these predicates fail,
 the result is `ambiguous/SEND_OUTCOME_UNKNOWN`, never a safe-to-resend error.
