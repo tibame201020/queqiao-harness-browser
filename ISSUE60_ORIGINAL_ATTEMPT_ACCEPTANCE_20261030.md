@@ -27,3 +27,7 @@ No Provider abstraction, Agent policy, Board approvals, extra Host permissions, 
 ## Next owning integration
 
 Return to SOF CEO Native E2E after this Browser Harness feature is installed and independently verified. The actual Paperclip Host supplies an authorized new Run; this adapter fix does not create synthetic governance tasks or replay prior real Run.
+
+## Additional installed-E2E route observation
+
+A fresh installed 0.5.11 synthetic Project Send and Collect completed. Independent read-only first reopen showed one correct full saved User and one Assistant in the original Project, but the immediate page URL was not yet the Trigger receipt URL; a later read-only open stabilized to the same URL and UUID. Exact immediate URL-string equality can therefore reject a valid saved message while React rewrites Project route aliases. The read-only verifier now compares the **same saved Conversation UUID on a canonical first-party Project route**, with existing original Project membership and full User message correlation, instead of requiring an identical transient Project route string. Added a RED→GREEN route-alias regression test; the original wrong-origin/non-Project route tests remain negative.

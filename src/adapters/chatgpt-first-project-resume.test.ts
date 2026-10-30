@@ -5,7 +5,7 @@ import { chatgptAdapter } from "./chatgpt-adapter.js";
 const uuid = "11111111-1111-4111-8111-111111111111";
 const url = "https://chatgpt.com/g/g-p-routealias/c/" + uuid;
 const prompt = "ISSUE60_SYNTHETIC_ORIGINAL_PROJECT_ATTEMPT_MATCH_123456";
-function fixture(opts: { savedTurns?:number; wrongText?:boolean; missingMembership?:boolean; wrongMembership?:boolean; wrongSavedUrl?:boolean; delayedCounts?:number[] } = {}) {
+function fixture(opts: { savedTurns?:number; wrongText?:boolean; missingMembership?:boolean; wrongMembership?:boolean; wrongSavedUrl?:boolean; savedRouteAlias?:boolean; delayedCounts?:number[] } = {}) {
   const opens:string[] = []; const sends:string[] = [];
   const memberPage = {
     url: vi.fn(() => "https://chatgpt.com/g/g-p-original/project"),
@@ -41,7 +41,8 @@ function fixture(opts: { savedTurns?:number; wrongText?:boolean; missingMembersh
     url: vi.fn(() => savedLocation),
     goto: vi.fn(async (target:string) => {
       opens.push("saved:"+target);
-      savedLocation = opts.wrongSavedUrl ? "https://chatgpt.com/c/"+uuid : target;
+      savedLocation = opts.wrongSavedUrl ? "https://chatgpt.com/c/"+uuid
+        : opts.savedRouteAlias ? "https://chatgpt.com/g/g-p-site-alias/c/"+uuid : target;
     }),
     locator: vi.fn(() => turns),
     waitForTimeout: vi.fn(async () => { polls++; }),
@@ -91,6 +92,11 @@ describe("Issue #60: original first Project Send read-only reconciliation",()=>{
     expect(await reconcileOriginalProjectAttempt(f.livePage as never,"g-p-original",prompt,url)).toBe(true);
     expect(f.sends).toHaveLength(0);
     expect(f.polls).toBeGreaterThanOrEqual(5);
+  });
+  it("Issue #60 route alias: accepts identical saved Conversation UUID under a canonical Project route alias",async()=>{
+    const f=fixture({savedRouteAlias:true,delayedCounts:[0,0,1,1]});
+    expect(await reconcileOriginalProjectAttempt(f.livePage as never,"g-p-original",prompt,url)).toBe(true);
+    expect(f.sends).toEqual([]);
   });
   it("rejects an invented or provisional destination without opening a browser tab",async()=>{
     const f=fixture();

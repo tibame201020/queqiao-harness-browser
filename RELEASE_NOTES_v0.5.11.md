@@ -6,3 +6,5 @@
 - Support existing Runner `resume` for first-Project Attempt after a prior ambiguous result. Do not add a new provider, permissions, approvals, policy or governance layer.
 - Tests cover persistence, immediate recovery, delayed hydration, non-owned/duplicate/wrong Project cases, and existing #55/#57 regressions.
 - Public npm release workflow is a separate publishing issue; local Windows/WSL Extension installation is independently verified.
+
+- During read-only Project hydration, tolerate a first-party Project route alias rewrite if the **saved Conversation UUID** remains equal and original Project membership and the complete User message match; do not require transient URL string equality. Regression test added.
