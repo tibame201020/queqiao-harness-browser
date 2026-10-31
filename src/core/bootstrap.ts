@@ -38,6 +38,8 @@ export async function closeBrowserCdp(browser: Pick<Browser, "newBrowserCDPSessi
 }
 
 export async function bootstrapClose(config: HarnessConfig): Promise<boolean> {
+  // Never close an attached CDP endpoint, even when recovery was opted in.
+  if (config.browser.connection !== "managed") throw new Error("bootstrap requires a managed browser profile");
   const port = config.browser.debugPort ?? deterministicDebugPort(config.name);
   if (!(await ready(port))) return false;
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);

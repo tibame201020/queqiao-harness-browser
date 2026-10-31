@@ -1,5 +1,11 @@
 # Queqiao Harness Browser
 
+## CDP endpoint availability and opt-in recovery (Issue #75)
+
+**Default `browser.connection:"cdp"` is attach-only.** It never starts, closes or replaces a Chrome daily-driver. If the CDP listener refuses a connection, `harness_run` returns `status:"unavailable", reason:"CDP_ENDPOINT_UNAVAILABLE"` with sanitized endpoint/recovery status. It is not `collect pending`. Check `harness_status.browserEndpoint` for a read-only local endpoint probe: `ready`, `absent`, `occupied`, `unknown`, or `not_checked`. Existing `state.desiredStatus/observedStatus` describe the interval supervisor, **not the Chrome process**.
+
+For a **separate private Harness-owned browser only**, explicitly set `browser.cdpRecovery:"harness-owned"`, `browser.connection:"cdp"`, matching `cdpUrl:"http://127.0.0.1:<port>"` and `debugPort:<port>`, and **do not configure `userDataDir`**. Only a dedicated local port and default per-profile Harness browser directory are accepted. The Runtime probes `/json/version`, launches at most once if truly absent, then reconnects exactly once before the same adapter action. It does **not** resend a Trigger, recover external CDP, or bypass site readiness. The private browser process remains active after each Run until its operator closes it. `harness_bootstrap` open and close remain managed-only; they are **not** a CDP recovery control. See [Issue #75 acceptance and troubleshooting](./ISSUE75_CDP_RECOVERY_ACCEPTANCE_20261031.md).
+
 ## Collect pending diagnostics (Issue #72)
 
 ChatGPT `collect` returns `status: "pending"` with `partialText` when it cannot establish a stable Assistant response before `timeoutMs`. The optional non-content `diagnostic` describes its last observed condition, not a proven underlying cause: `pendingReason` (`NO_ASSISTANT_MESSAGE`, `EMPTY_ASSISTANT_TEXT`, `GENERATION_ACTIVE`, `UNSTABLE_MESSAGE_COUNT`, `UNSTABLE_TEXT`, `SETTLE_WINDOW_NOT_MET`), `assistantCount`, `hasText`, `generating`, `elapsedMs`, `timeoutMs`, `settleMs`, `stablePasses`, and `stableDurationMs`.

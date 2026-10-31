@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { normalizeHarnessConfig } from "./core/config.js";
 import { bootstrapClose, bootstrapOpen } from "./core/bootstrap.js";
 import { openBrowserSession } from "./core/session.js";
+import { readCdpEndpointStatus, toCdpUnavailableResult } from "./core/cdp-recovery.js";
 import { captureComposerAbsentFailure } from "./core/failure-screenshot.js";
 import { capturePendingCollectScreenshot } from "./core/collect-diagnostics.js";
 import { defaultHarnessHome, listProfiles, loadConfig, profilePaths, saveConfig } from "./core/store.js";
@@ -59,7 +60,8 @@ async function runProfile(name: string, action?: string, args: Record<string, un
   }
 
   let attemptId: string | null = null;
-  const result = await executeRunLifecycle({
+  let result;
+  try { result = await executeRunLifecycle({
     markRunning: () => writeState(name, { status: "RUNNING", action: actualAction, lastError: null }),
     open: () => openBrowserSession(config, home),
     execute: async (session) => {
@@ -155,6 +157,11 @@ async function runProfile(name: string, action?: string, args: Record<string, un
     markError: (error) => writeState(name, { status: "ERROR", lastError: error instanceof Error ? error.message : String(error) }),
     close: (session) => session.close(),
   });
+  } catch (error) {
+    const unavailable = toCdpUnavailableResult(error);
+    if (unavailable) return { ...unavailable, action: actualAction };
+    throw error;
+  }
   return { status: "ok", action: actualAction, result };
 }
 
@@ -214,7 +221,7 @@ async function main() {
   const command = process.argv[2] || ""; const payload = decodePayload();
   if (command === "init") { const config = normalizeHarnessConfig(payload.config); const adapterConfig = registry.validateConfig(config.adapter, config.adapterConfig); const normalized = { ...config, adapterConfig } as typeof config; await saveConfig(home, normalized); return output({ status: "ok", profile: normalized.name, config: normalized }); }
   if (command === "list") return output({ status: "ok", profiles: await listProfiles(home) });
-  if (command === "status") { const config = await loadConfig(home, payload.name); const state = await readState(payload.name); return output({ status: "ok", profile: payload.name, state: reconcileRuntimeState(config, state, pidAlive), config }); }
+  if (command === "status") { const config = await loadConfig(home, payload.name); const state = await readState(payload.name); const browserEndpoint = await readCdpEndpointStatus(config); return output({ status: "ok", profile: payload.name, state: reconcileRuntimeState(config, state, pidAlive), browserEndpoint, config }); }
   if (command === "overview") { const profiles = await listProfiles(home); const entries = []; for (const profile of profiles) { const config = await loadConfig(home, profile); const state = await readState(profile); entries.push(buildHarnessOverviewEntry(config, state, pidAlive)); } return output({ status: "ok", profiles: entries }); }
   if (command === "bootstrap") { const config = await loadConfig(home, payload.name); const url = config.browser.startUrl || registry.get(config.adapter).bootstrapUrl; const result = payload.operation === "close" ? { closed: await bootstrapClose(config) } : await bootstrapOpen(config, home, url); return output({ status: "ok", profile: payload.name, ...result }); }
   if (command === "run") return output(await runProfile(payload.name, payload.action, payload.args || {}, payload.force === true));
