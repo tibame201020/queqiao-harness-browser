@@ -1,6 +1,6 @@
 {
   "name": "@tibame201020/queqiao-harness-browser",
-  "version": "0.5.18",
+  "version": "0.5.19",
   "description": "Browser harness runtime extension for Queqiao",
   "type": "module",
   "main": "./dist/index.js",
@@ -22,11 +22,12 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test && npm run build && npm run test:package && npm run test:stateless-runner",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:package && npm run test:stateless-runner && npm run test:cdp-runner",
     "prepack": "npm run check",
     "test:package": "node scripts/check-package-import.mjs",
     "test:stateless-runner": "node scripts/check-stateless-runner.mjs",
-    "dev:stage": "npm run build && node scripts/prepare-local-install.mjs"
+    "dev:stage": "npm run build && node scripts/prepare-local-install.mjs",
+    "test:cdp-runner": "node scripts/check-cdp-runner.mjs"
   },
   "engines": {
     "node": ">=22.19 <25"
@@ -50,7 +51,7 @@
     "module": "./dist/index.js",
     "manifest": {
       "id": "dev.queqiao.harness-browser",
-      "version": "0.5.18",
+      "version": "0.5.19",
       "displayName": "Queqiao Harness Browser",
       "host": {
         "kind": "worker"
