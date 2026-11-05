@@ -232,6 +232,19 @@ describe("ChatGPT generic pre-send readiness (#16)", () => {
     expect(f.attemptedSends).toBe(0);
   });
 
+  it("classifies an editor that becomes noneditable after a failed draft read (#68)", async () => {
+    const f = fixture({ editorReadFailure: true });
+    f.composer.isEditable.mockResolvedValueOnce(true).mockResolvedValue(false);
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => { now += 3000; return now; });
+    const result = await chatgptAdapter.execute("trigger", { prompt: "SYNTHETIC_NO_SEND" }, context(f.page));
+    expect(result).toMatchObject({ status: "unavailable", submissionState: "not_sent",
+      diagnostic: { stage: "precompose", precomposeReason: "composer_uneditable",
+        composerMatches: 1, composerVisible: true, composerEditable: false } });
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.attemptedSends).toBe(0);
+  });
+
   it("does not append if a separate draft appears during focus (#20)", async () => {
     const f = fixture({ focusDraft: "CONFIDENTIAL_RACING_DRAFT" });
     const result = await chatgptAdapter.execute("trigger", { prompt: "next turn" }, context(f.page));

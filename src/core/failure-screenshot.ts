@@ -28,7 +28,7 @@ export async function captureComposerAbsentFailure<T extends ScreenshotCandidate
   value: T,
 ): Promise<WithScreenshot<T>> {
   if (value.status !== "unavailable" || value.submissionState !== "not_sent"
-    || value.diagnostic?.precomposeReason !== "composer_absent") {
+    || !["composer_absent", "composer_uneditable"].includes(value.diagnostic?.precomposeReason ?? "")) {
     return value as WithScreenshot<T>;
   }
 
@@ -36,7 +36,7 @@ export async function captureComposerAbsentFailure<T extends ScreenshotCandidate
   try {
     const directory = path.join(profilePaths(home, profileName).root, "private-diagnostics");
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-    const file = `composer-absent-${randomUUID()}.png`;
+    const file = `composer-${value.diagnostic?.precomposeReason === "composer_absent" ? "absent" : "uneditable"}-${randomUUID()}.png`;
     // Do not pass a path into Playwright: write in the local private directory
     // ourselves with restricted create permissions.
     const image = await page.screenshot({ type: "png", animations: "disabled", timeout: 5_000 });

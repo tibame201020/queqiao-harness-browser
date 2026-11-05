@@ -1,0 +1,74 @@
+import { chromium } from "playwright-core";
+import assert from "node:assert/strict";
+import {resolveSemanticEditor} from "../dist/core/semantic-editor.js";
+import {resolveChatGptComposer} from "../dist/adapters/chatgpt-composer-resolver.js";
+
+const browser=await chromium.launch({channel:"chrome",headless:true});
+try {
+  const page=await browser.newPage();
+  const cases=[
+    {name:"grok-like",role:"combobox",send:'button[data-testid="chat-submit"][type="submit"]'},
+    {name:"mistral-like",role:"textbox",send:'button[aria-label="Send"][type="submit"]'},
+  ];
+  const out=[];
+  for(const item of cases){
+    const sendButton=item.name==="grok-like" ? '<button type="submit" data-testid="chat-submit">Send</button>' : '<button type="submit" aria-label="Send">Send</button>';
+    await page.setContent(`<main><form id="active"><div id="old" role="${item.role}" contenteditable="true" aria-label="Composer"></div>${sendButton}</form></main>`);
+    await page.evaluate(()=>{document.querySelector("#old").outerHTML='<div id="replacement" role="'+document.querySelector("#old").getAttribute("role")+'" contenteditable="true" aria-label="Composer"></div>'});
+    const contract={css:"#old:visible",roles:[item.role],sendWithinForm:item.send};
+    const ready=await resolveSemanticEditor(page,contract);
+    assert.equal(ready.source,"aria");
+    assert.equal(ready.matches,1);
+    await page.locator("#replacement").evaluate(node=>node.setAttribute("contenteditable","false"));
+    const readonly=await resolveSemanticEditor(page,contract);
+    assert.equal(readonly.editor,null);
+    await page.locator("#replacement").evaluate(node=>node.removeAttribute("contenteditable"));
+    await page.locator("#replacement").evaluate(node=>node.setAttribute("contenteditable","true"));
+    await page.locator("#active").evaluate(node=>node.insertAdjacentHTML("beforeend",'<button type="submit" aria-label="Send" data-testid="chat-submit">Send</button>'));
+    const duplicate=await resolveSemanticEditor(page,contract);
+    assert.equal(duplicate.editor,null);
+    out.push({case:item.name,selectorDriftRecovered:true,noneditableRejected:true,duplicateSendRejected:true});
+  }
+  // Independent review P1: a new earlier matching textbox must not steal focus.
+  await page.setContent(`<main><form id="original"><div role="textbox" contenteditable="true">ORIGINAL_DRAFT</div><button type="submit">Send</button></form></main>`);
+  const strict=await resolveSemanticEditor(page,{css:"#nonexistent",roles:["textbox"],sendWithinForm:"button[type=submit]"});
+  assert.equal(strict.source,"aria");
+  await page.evaluate(()=>document.body.insertAdjacentHTML("afterbegin",`<form id="injected"><div role="textbox" contenteditable="true">OTHER_DRAFT</div><button type="submit">Send</button></form>`));
+  let rejected=false;
+  try {await strict.editor.fill("SHOULD_NOT_SEND",{timeout:500});} catch {rejected=true;}
+  assert.equal(rejected,true,"A recovered editor must stay strict after a second candidate appears");
+  assert.equal(await page.locator("#original [role=textbox]").innerText(),"ORIGINAL_DRAFT");
+  assert.equal(await page.locator("#injected [role=textbox]").innerText(),"OTHER_DRAFT");
+  // Independent review P2: another allowed AX role appearing in the same form
+  // after resolution must make the saved locator ambiguous, not silently editable.
+  await page.setContent(`<form id="multi"><div role="combobox" contenteditable="true">PRIMARY</div><button data-testid="chat-submit" type="submit">Send</button></form>`);
+  const bothRoles=await resolveSemanticEditor(page,{css:"#missing",roles:["combobox","textbox"],sendWithinForm:'button[data-testid="chat-submit"][type="submit"]'});
+  assert.equal(bothRoles.source,"aria");
+  await page.locator("#multi").evaluate(node=>node.insertAdjacentHTML("afterbegin",'<div role="textbox" contenteditable="true">SECONDARY</div>'));
+  let crossRoleRejected=false;
+  try {await bothRoles.editor.fill("SHOULD_NOT_SEND",{timeout:500});}catch{crossRoleRejected=true;}
+  assert(crossRoleRejected,"Second allowed role must invalidate previously resolved editor");
+  assert.equal(await page.getByRole("combobox").innerText(),"PRIMARY");
+  assert.equal(await page.getByRole("textbox").innerText(),"SECONDARY");
+  // Independent review P1: a sole replacement textbox outside the owned Send form
+  // must never receive the original prompt between resolution and fill.
+  await page.setContent(`<main><form id="trusted"><div role="textbox" contenteditable="true" aria-label="Composer"></div><button data-testid="send-button">Send</button></form></main>`);
+  const owned=await resolveSemanticEditor(page,{css:"#missing",roles:["textbox"],sendWithinForm:'button[data-testid="send-button"]'});
+  assert.equal(owned.source,"aria");
+  await page.locator("#trusted").evaluate(node=>node.outerHTML='<div role="textbox" contenteditable="true" aria-label="Search">SEARCH_DRAFT</div>');
+  let replacementRejected=false;
+  try {await owned.editor.fill("SENSITIVE_PROMPT",{timeout:500});} catch {replacementRejected=true;}
+  assert(replacementRejected,"Replacement search input must not inherit Composer locator");
+  assert.equal(await page.getByRole("textbox").innerText(),"SEARCH_DRAFT");
+  // ChatGPT-like lifecycle: after dispatch, Send becomes Stop while editor remains empty.
+  await page.setContent(`<form><div role="textbox" contenteditable=""></div><button data-testid="send-button" type="button">Send</button></form>`);
+  const preSend=await resolveChatGptComposer(page);
+  assert.equal(preSend.source,"aria");
+  await page.locator("button").evaluate(node => {node.dataset.testid="stop-button";node.textContent="Stop";});
+  const rejectedAsPreSend=await resolveChatGptComposer(page);
+  const observedAfterSend=await resolveChatGptComposer(page,{observationOnly:true});
+  assert.equal(rejectedAsPreSend.composer,null);
+  assert.equal(observedAfterSend.source,"aria");
+  assert.equal(await observedAfterSend.composer.innerText(),"");
+  console.log(JSON.stringify({status:"PASS",cases:out,lateDuplicateEditor:{rejected,originalDraftPreserved:true,otherDraftPreserved:true},crossRoleAddition:{rejected:crossRoleRejected,existingDraftPreserved:true,newDraftPreserved:true},replacementSearch:{rejected:replacementRejected,searchDraftPreserved:true},postclickStop:{presendRejected:true,postclickObserved:true}}));
+} finally {await browser.close();}

@@ -281,6 +281,20 @@ describe("ChatGPT composer compatibility", () => {
     expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
     expect(f.calls.filter(x=>x==="send")).toHaveLength(0);
   });
+  it("Issue #68: visible but noneditable Composer has an explicit not_sent reason", async () => {
+    const f = fixture({resume:true,siteBubble:true});
+    f.composer.isEditable.mockResolvedValue(false);
+    const result = await chatgptAdapter.execute("trigger", {prompt:"SYNTHETIC_UNEDITABLE"}, {
+      browser:{page:f.page},
+      config:{adapterConfig:{conversation:{newChatEachRun:false,conversationId:ID}}},
+    });
+    expect(result).toMatchObject({status:"unavailable",submissionState:"not_sent",
+      diagnostic:{stage:"precompose",precomposeReason:"composer_uneditable",
+        composerMatches:1,composerVisible:true,composerEditable:false}});
+    expect(f.page.keyboard.insertText).not.toHaveBeenCalled();
+    expect(f.calls.filter(x=>x==="send")).toHaveLength(0);
+  });
+
   it("Issue #68 RED: one focus click failure with temporary missing editor reacquires and sends once", async () => {
     const f = fixture({resume:true,siteBubble:true});
     const beforeSend = vi.fn(async () => undefined);

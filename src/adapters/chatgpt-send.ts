@@ -1,9 +1,10 @@
 import type { Locator, Page } from "playwright-core";
 import { createHmac, randomBytes } from "node:crypto";
 import { conversationIdFromHref } from "./chatgpt.js";
+import { resolveChatGptComposer, CHATGPT_FORM_SEND_CSS } from "./chatgpt-composer-resolver.js";
 
-const COMPOSER = '#prompt-textarea:visible, [role="textbox"][contenteditable="true"]:visible';
-const FORM_SEND = '[data-testid="send-button"], button[type="submit"]';
+// Composer resolution uses native Playwright ARIA only after CSS fails.
+const FORM_SEND = CHATGPT_FORM_SEND_CSS;
 const FORM_SEND_VISIBLE = '[data-testid="send-button"]:visible, button[type="submit"]:visible';
 const LEGACY_SEND = '[data-testid="send-button"]';
 const LEGACY_SEND_VISIBLE = '[data-testid="send-button"]:visible';
@@ -108,11 +109,12 @@ type Readiness = {
   sameTarget: boolean;
   generationActive: boolean;
   composerMatches: number;
+  composerResolution: "css" | "aria" | "ambiguous" | "none";
   composerVisible: boolean;
   composerEditable: boolean;
   promptPresent: boolean | null;
   promptIntegrity: "complete" | "empty" | "truncated" | "mismatch" | "unverifiable" | null;
-  precomposeReason: "draft_present" | "editor_read_failed" | "composer_click_failed" | "composer_absent" | null;
+  precomposeReason: "draft_present" | "editor_read_failed" | "composer_click_failed" | "composer_absent" | "composer_uneditable" | null;
   domReadiness?: { initial: DomReadinessSample; terminal: DomReadinessSample };
   sendSelector: SendSelection["selector"];
   sendMatches: number;
@@ -217,11 +219,17 @@ async function inspectPromptIntegrity(composer: Locator, prompt: string): Promis
 
 async function inspect(page: Page, stage: Stage, started: number, initialId: string | null,
   expectedId: string | null, prompt?: string): Promise<{ state: Readiness; composer: Locator | null; send: Locator | null }> {
-  const composers = page.locator(COMPOSER);
-  const composerMatches = await composers.count().catch(() => 0);
-  const composer = composerMatches === 1 ? composers.first() : null;
+  // After the Send click, React may replace Send with Stop. Only observe the
+  // editor in this phase; never use this relaxed path to authorize dispatch.
+  const resolved = await resolveChatGptComposer(page, {observationOnly:stage==="postclick"});
+  const composerMatches = resolved.matches;
+  const composer = resolved.composer;
   const composerVisible = !!composer && await composer.isVisible().catch(() => false);
-  const composerEditable = composerVisible && !!composer && await composer.isEditable().catch(() => false);
+  // A role=textbox locator can report editable even when contenteditable becomes false.
+  // Verify the actual DOM state again after resolution, before input is permitted.
+  const nativeEditable = resolved.source !== "aria" || (!!composer
+    && await composer.evaluate((node) => (node as HTMLElement).isContentEditable).catch(() => false));
+  const composerEditable = composerVisible && !!composer && nativeEditable && await composer.isEditable().catch(() => false);
   const promptIntegrity = prompt === undefined ? null : composer ? await inspectPromptIntegrity(composer, prompt) : "unverifiable";
   const promptPresent = promptIntegrity === null ? null : promptIntegrity === "complete";
   const selection = await selectSend(page, composer, composerMatches);
@@ -232,7 +240,7 @@ async function inspect(page: Page, stage: Stage, started: number, initialId: str
     stage, elapsedMs: Math.max(0, Date.now() - started), url: current.url, conversationId: current.id,
     sameTarget: sameTarget(page, expectedId, initialId),
     generationActive: await isChatGptGenerationActive(page),
-    composerMatches, composerVisible, composerEditable, promptPresent, promptIntegrity, precomposeReason: null,
+    composerMatches, composerResolution: resolved.source, composerVisible, composerEditable, promptPresent, promptIntegrity, precomposeReason: null,
     sendSelector: selection.selector, sendMatches: selection.count, sendVisibleMatches: selection.visibleCount,
     sendVisible, sendEnabled, sendActionable: false,
     submissionConfirmed: null, composerSettled: null, postClickReason: null,
@@ -773,7 +781,9 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
   while (!(latest.state.sameTarget && !latest.state.generationActive
     && latest.state.composerMatches === 1 && latest.state.composerVisible && latest.state.composerEditable)) {
     if (Date.now() - started >= 15_000) throw await precomposeFailure(latest.state,
-      latest.state.composerMatches === 0 ? "composer_absent" : null);
+      latest.state.composerMatches === 0 ? "composer_absent"
+        : latest.state.composerMatches === 1 && latest.state.composerVisible && !latest.state.composerEditable
+          ? "composer_uneditable" : null);
     await page.waitForTimeout(200);
     latest = await inspect(page, "precompose", started, initialId, targetId);
   }
@@ -804,7 +814,9 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
       }
       if (Date.now() - started >= 15_000) {
         throw await precomposeFailure(current.state,
-          current.state.composerMatches === 0 ? "composer_absent" : "editor_read_failed");
+          current.state.composerMatches === 0 ? "composer_absent"
+            : current.state.composerMatches === 1 && current.state.composerVisible && !current.state.composerEditable
+              ? "composer_uneditable" : "editor_read_failed");
       }
       await page.waitForTimeout(200);
       current = await inspect(page, "precompose", started, initialId, targetId);
