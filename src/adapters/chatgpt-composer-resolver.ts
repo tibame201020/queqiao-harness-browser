@@ -8,9 +8,10 @@ export const CHATGPT_FORM_SEND_CSS = '[data-testid="send-button"], button[type="
 export type ComposerResolution = Omit<SemanticEditorResolution, "editor"> & { composer: SemanticEditorResolution["editor"] };
 
 /** ChatGPT-specific contract, backed by the shared browser Accessibility resolver. */
-export async function resolveChatGptComposer(page: Page): Promise<ComposerResolution> {
+export async function resolveChatGptComposer(page: Page, options: {observationOnly?: boolean} = {}): Promise<ComposerResolution> {
   const {editor, ...rest} = await resolveSemanticEditor(page, {
     css:CHATGPT_COMPOSER_CSS,roles:["textbox"],sendWithinForm:CHATGPT_FORM_SEND_CSS,
+    observationOnly:options.observationOnly === true,
   });
   return {...rest,composer:editor};
 }

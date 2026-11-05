@@ -1,6 +1,7 @@
 import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
 import {resolveSemanticEditor} from "../dist/core/semantic-editor.js";
+import {resolveChatGptComposer} from "../dist/adapters/chatgpt-composer-resolver.js";
 
 const browser=await chromium.launch({channel:"chrome",headless:true});
 try {
@@ -38,5 +39,15 @@ try {
   assert.equal(rejected,true,"A recovered editor must stay strict after a second candidate appears");
   assert.equal(await page.locator("#original [role=textbox]").innerText(),"ORIGINAL_DRAFT");
   assert.equal(await page.locator("#injected [role=textbox]").innerText(),"OTHER_DRAFT");
-  console.log(JSON.stringify({status:"PASS",cases:out,lateDuplicateEditor:{rejected,originalDraftPreserved:true,otherDraftPreserved:true}}));
+  // ChatGPT-like lifecycle: after dispatch, Send becomes Stop while editor remains empty.
+  await page.setContent(`<form><div role="textbox" contenteditable=""></div><button data-testid="send-button" type="button">Send</button></form>`);
+  const preSend=await resolveChatGptComposer(page);
+  assert.equal(preSend.source,"aria");
+  await page.locator("button").evaluate(node => {node.dataset.testid="stop-button";node.textContent="Stop";});
+  const rejectedAsPreSend=await resolveChatGptComposer(page);
+  const observedAfterSend=await resolveChatGptComposer(page,{observationOnly:true});
+  assert.equal(rejectedAsPreSend.composer,null);
+  assert.equal(observedAfterSend.source,"aria");
+  assert.equal(await observedAfterSend.composer.innerText(),"");
+  console.log(JSON.stringify({status:"PASS",cases:out,lateDuplicateEditor:{rejected,originalDraftPreserved:true,otherDraftPreserved:true},postclickStop:{presendRejected:true,postclickObserved:true}}));
 } finally {await browser.close();}

@@ -5,6 +5,8 @@ export type SemanticEditorContract = {
   css: string;
   roles: readonly ("textbox" | "combobox")[];
   sendWithinForm: string;
+  /** Observation after dispatch may proceed while Send has become Stop. Never set before Send. */
+  observationOnly?: boolean;
 };
 
 export type SemanticEditorResolution = {
@@ -37,6 +39,6 @@ export async function resolveSemanticEditor(page: Page, contract: SemanticEditor
   if (!(await candidate.evaluate(node => (node as HTMLElement).isContentEditable).catch(() => false))) return none();
   const form = candidate.locator("xpath=ancestor::form[1]");
   if (await form.count().catch(() => -1) !== 1) return none();
-  if (await form.locator(contract.sendWithinForm).count().catch(() => -1) !== 1) return none();
+  if (!contract.observationOnly && await form.locator(contract.sendWithinForm).count().catch(() => -1) !== 1) return none();
   return {matches:1,editor:candidate,source:"aria"};
 }

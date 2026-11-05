@@ -29,6 +29,12 @@ describe("Issue #68 in-process Playwright Accessibility fallback", () => {
     expect(f.page.getByRole).toHaveBeenCalledWith("textbox");
     expect(f.semantic.evaluate).toHaveBeenCalledOnce();
   });
+  it("observes the unique editor after Send becomes Stop, without permitting pre-send recovery", async () => {
+    const f=fixture({send:0});
+    expect((await resolveChatGptComposer(f.page as never)).composer).toBeNull();
+    const result=await resolveChatGptComposer(f.page as never,{observationOnly:true});
+    expect(result).toMatchObject({source:"aria",matches:1,composer:f.semantic});
+  });
   it.each([
     ["ambiguous CSS", {css:2}, "ambiguous"],
     ["duplicate semantic targets", {semantic:2}, "none"],

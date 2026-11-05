@@ -219,7 +219,9 @@ async function inspectPromptIntegrity(composer: Locator, prompt: string): Promis
 
 async function inspect(page: Page, stage: Stage, started: number, initialId: string | null,
   expectedId: string | null, prompt?: string): Promise<{ state: Readiness; composer: Locator | null; send: Locator | null }> {
-  const resolved = await resolveChatGptComposer(page);
+  // After the Send click, React may replace Send with Stop. Only observe the
+  // editor in this phase; never use this relaxed path to authorize dispatch.
+  const resolved = await resolveChatGptComposer(page, {observationOnly:stage==="postclick"});
   const composerMatches = resolved.matches;
   const composer = resolved.composer;
   const composerVisible = !!composer && await composer.isVisible().catch(() => false);

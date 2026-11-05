@@ -10,6 +10,8 @@ Playwright 1.63 native `getByRole` is the runtime implementation; Vercel Labs `a
 
 `src/core/semantic-editor.ts` owns provider-agnostic resolution. Each Adapter supplies its own CSS, allowed Accessibility roles and known Submit selector **inside the same form**. The CSS route remains primary. Native semantic fallback occurs only on **zero** CSS matches. Multiple CSS or semantic candidates fail closed. Fallback requires visible DOM `isContentEditable`, exactly one ancestor form and exactly one provider-scoped Send control.
 
+The shared resolver distinguishes **pre-dispatch** from **post-dispatch** use. Send ownership is mandatory to authorize filling/submission; ChatGPT post-click inspection is observation-only because Send may legitimately become Stop during generation. It still requires a unique visible native-editable textbox in its form and can never authorize a new Send. A real Chrome lifecycle fixture covers this transition.
+
 The shared API returns the **strict live Accessibility Locator**, never `.first()`: an editor that was unique at resolution can gain a second matching textbox during a DOM remount. In that case, Playwright strict mode must reject the subsequent fill rather than retargeting to the first editor. The isolated Chrome race test verifies that both original and newly inserted drafts remain unchanged. This addresses a reproduced P1 finding from an independent Codex review.
 
 The shared API treats CSS-count exceptions as failures, **not** as zero matches. A failed read cannot authorize a semantic fallback. The form-owned Send check is repeated by Playwright when a fresh locator is resolved, and duplicate controls never get a first-match click.
