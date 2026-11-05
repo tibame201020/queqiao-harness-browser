@@ -1,0 +1,315 @@
+openapi: 3.1.0
+info:
+  title: Browser Service V2 HTTP Contract
+  version: 0.1.0-proposed
+  description: >-
+    Proposed design contract only; not implemented. An HTTP 202 is a durable
+    acceptance acknowledgement, not proof of browser Send/Collect.
+servers:
+  - url: http://127.0.0.1:8766
+    description: Example loopback development address; actual base URL is client configurable.
+security:
+  - bearerAuth: []
+paths:
+  /v1/health:
+    get:
+      operationId: getHealth
+      security: []
+      summary: Process liveness without browser or session access
+      responses:
+        "200":
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status:
+                    const: ok
+  /v1/connections:
+    get:
+      operationId: listConnections
+      summary: List authorized safe metadata for pre-registered connections
+      responses:
+        "200":
+          description: Accessible connections
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [connections]
+                properties:
+                  connections:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Connection"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/operations:
+    post:
+      operationId: createOperation
+      summary: Accept one Send or Collect operation; never queue
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/SendRequest"
+                - $ref: "#/components/schemas/CollectRequest"
+      responses:
+        "202":
+          description: Durable acceptance only; query operation for verified outcome
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /v1/operations/{operationId}:
+    get:
+      operationId: getOperation
+      summary: Read client-owned normalized operation status
+      parameters:
+        - $ref: "#/components/parameters/OperationId"
+      responses:
+        "200":
+          description: Authorized operation state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/operations/{operationId}/reconcile:
+    post:
+      operationId: reconcileSend
+      summary: Read-only reconcile same possibly submitted Send; never dispatch
+      parameters:
+        - $ref: "#/components/parameters/OperationId"
+      responses:
+        "200":
+          description: Same operation with reconciled or unchanged status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+  parameters:
+    OperationId:
+      name: operationId
+      in: path
+      required: true
+      description: Opaque service-issued ID, not a Browser Harness Attempt ID
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Stable client request identity. Same client/key/body returns same operation;
+        same client/key/different body is 409 IDEMPOTENCY_CONFLICT.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+        pattern: "^[A-Za-z0-9._-]+$"
+  schemas:
+    Connection:
+      type: object
+      additionalProperties: false
+      required: [connectionId, provider, status, capabilities]
+      properties:
+        connectionId:
+          type: string
+        provider:
+          type: string
+          enum: [chatgpt]
+        status:
+          type: string
+          enum: [ready, busy, quarantined, unavailable]
+        capabilities:
+          type: array
+          items:
+            type: string
+            enum: [send, collect, reconcile]
+    SavedTarget:
+      type: object
+      additionalProperties: false
+      required: [conversationId, canonicalUrl]
+      properties:
+        conversationId:
+          type: string
+          format: uuid
+        canonicalUrl:
+          type: string
+          format: uri
+          description: >-
+            Service must verify the exact https://chatgpt.com/c/{conversationId}
+            host and identity. Not an arbitrary navigation URL.
+    SendRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, connectionId, target, message]
+      properties:
+        kind:
+          const: send
+        connectionId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        target:
+          $ref: "#/components/schemas/SavedTarget"
+        message:
+          type: string
+          minLength: 1
+          maxLength: 100000
+          description: Private request body; must never appear in public logs/CI.
+    CollectRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, sendOperationId]
+      properties:
+        kind:
+          const: collect
+        sendOperationId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Must reference same client's submitted Send Operation.
+    Operation:
+      type: object
+      additionalProperties: false
+      required: [operationId, kind, status, createdAt, updatedAt]
+      properties:
+        operationId:
+          type: string
+          minLength: 1
+        kind:
+          type: string
+          enum: [send, collect]
+        status:
+          type: string
+          enum: [accepted, running, submitted, completed, unknown, failed]
+          description: submitted for verified Send, completed for verified Collect.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        result:
+          $ref: "#/components/schemas/Result"
+        error:
+          $ref: "#/components/schemas/Error"
+    Result:
+      type: object
+      additionalProperties: false
+      required: [verification]
+      properties:
+        verification:
+          type: string
+          enum: [none, send_verified, response_verified, unavailable]
+        text:
+          type: string
+          maxLength: 200000
+          description: Authorized sensitive Collect result; never persisted to public logs.
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - VALIDATION_ERROR
+            - UNAUTHORIZED
+            - NOT_FOUND
+            - BROWSER_BUSY
+            - IDEMPOTENCY_CONFLICT
+            - INVALID_STATE
+            - TARGET_MISMATCH
+            - UNSUPPORTED_TARGET
+            - RATE_LIMITED
+            - SEND_OUTCOME_UNKNOWN
+            - CONNECTION_QUARANTINED
+            - RESULT_UNAVAILABLE
+            - BACKEND_UNAVAILABLE
+        message:
+          type: string
+          description: Sanitized human-readable message without private identifiers.
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/Error"
+  responses:
+    BadRequest:
+      description: Invalid API shape or header
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Unauthorized client
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Missing or inaccessible scoped resource
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: Busy, invalid state, idempotency conflict or quarantine
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unprocessable:
+      description: Invalid or unsupported saved conversation target
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: Authenticated caller exceeded limit
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
