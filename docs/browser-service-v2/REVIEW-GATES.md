@@ -1,32 +1,46 @@
-# Browser Service V2 — Engineering Review Gates
+# Browser Service V2 — Model Provider Review Gates
 
-Status: required future gates; **not yet executed**.
+Status: **specified, not executed**. 2026-11-05.
 
-## D0 — Documentation readiness
+## D0 — Contract and feasibility
 
-- BSV2-001..011 each have exactly one owner, dependency list, RED test, GREEN output, negative cases and Done evidence.
-- All public endpoints and codes match OPENAPI.yaml and SPEC.md.
-- Worktree baseline is current accepted GitHub main; do not modify an unrelated/diverged local main.
-- No private profile state, conversation identity, original prompt, marker, credential or unredacted receipt enters the repository.
+- SPEC, ADR, OpenAPI, Tickets and README all describe **model-provider substitution**, not Agent Tool, AgentHarness or public `/v1/operations`.
+- `GET /v1/models`, `POST /v1/chat/completions`, JSON/SSE/standard error envelope are consistent.
+- BSV2-001 checks **actual Browser producer** plus a real model client: validated tool call, native tool execution, `role: tool` follow-up, history, `finish_reason`, stream/cancellation behavior.
+- Failure to prove backend-native model semantics is **BLOCKED**. A text-only response, fake tool-call fixture, or curl 200 cannot pass.
+- No private real profiles, conversation URLs/IDs, prompts, tokens, screenshots or answer text in repository/CI.
+- Start from freshly fetched `origin/main`; preserve unrelated local main and existing worktrees.
 
-## D1 — Per-ticket TDD gate
+## D1 — Ticket TDD
 
-Run the targeted test and capture a genuine failing RED state on the base; apply the smallest change and show passing GREEN state; rerun relevant regressions. The worker produces a commit and a bounded, sanitized evidence packet. Agent self-report without a commit/diff is not evidence.
+- Capture a real RED test with expected failure on base; implement bounded change; capture GREEN.
+- Follow strict one-Send / UNKNOWN no-resend semantics.
+- Validate negative cases: incorrect model, unsupported parameter, missing/invalid tool schema, tool ID mismatch, SSE malformed chunks, missing [DONE], cancellation, lost response, duplicate requests.
+- Test both client-wire shape and producer origin. Valid JSON alone does not establish correct agent behavior.
 
-## D2 — Coordinator independent review
+## D2 — Independent source review
 
-Review every changed file against spec and owned paths. Require strict client scoping, no duplicate Send, shared-owner locking, restart safety, typed error mapping, negative tests and updated docs. Critique test effectiveness and reject vacuous test doubles. If code or behavior differs from the Spec, raise a spec-change decision rather than silently updating expectations.
+- Compare code and requests to accepted SPEC SHA and owned paths; inspect full diff and evidence.
+- Reject a Provider-specific agent extension as substitute for model API compatibility.
+- Reject fabricated tokens/usage, fake model provenance, silent parameter drops or tool calls invented from prose.
+- Verify strict identity, profile owner lock, private Attempt recovery and role/history isolation.
 
-## D3 — Integration/CI gate
+## D3 — Integration and GitHub Actions
 
-Integrate reviewed commits in dependency order; independently run project typecheck/test/build/package and API contract tests on integration branch. GitHub Actions must run on proposed PR head. Verify no tracked private runtime files or fixture credentials. A test on another branch/commit is not evidence for the integration SHA.
+- OpenAPI lint/validation, typecheck, build, unit/integration tests, stream/tool-call fixtures and security checks run on the **exact PR head SHA**.
+- A single test fixture or workflow success message is not a release proof.
+- CI excludes real accounts, tokens, browser/profile state and raw user content.
 
-## D4 — Real HTTP/browser/release gate
+## D4 — Real provider-only E2E and release
 
-Start an independent Service without Queqiao, run fresh synthetic saved Conversation Send + Collect + read-only UNKNOWN reconciliation; independently verify actual observed receipts and one-send ownership. Test a generic HTTP client replacing Pi. No live profile/browser execution without explicit authorization. PR merge/tag/release only after accepted D0–D4.
+- Start BSV2 without Queqiao, Paperclip, n8n or Pi extension.
+- Select configured BSV2 model in **unmodified Pi** via `models.json`, invoke model, receive tool call, allow Pi native harmless tool execution, return tool result, receive next model response.
+- Repeat against independent OpenCode-compatible consumer by provider config only; same BSV2 server.
+- Test text-only completion, wrong tool, stream on/off, timeout/abort, unknown Send (no automatic replay) and error handling.
+- If any required capability is unverified, report BLOCKED/UNKNOWN; no merge, tag, release or compatibility claim.
 
-## Evidence record per ticket
+## Evidence for each ticket
 
-Ticket ID; accepted spec SHA; base/head SHAs; changed paths; RED command/output; GREEN commands/output; review actor and findings; GitHub Actions run identity/status; acceptance PASS/FAIL/BLOCKED/UNKNOWN; sanitized failure category. Treat unknown evidence as NOT VERIFIED.
+Record: ticket ID; accepted spec SHA; source/test head SHA; actual RED command/failure and GREEN command/counts; CI run URL; real (redacted) model request, browser Attempt and response identities correlated privately; native agent-loop/tool receipt; independent reviewer findings; PASS/FAILED/BLOCKED/UNKNOWN; documentation updates.
 
-Historical claim of multiple reviewers ACCEPT applied to earlier ephemeral discussion artifacts, **not** these newly versioned files; no retroactive review proof is inferred.
+No historical E2E or previous design review counts as acceptance of this revised model API.

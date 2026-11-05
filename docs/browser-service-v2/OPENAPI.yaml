@@ -1,24 +1,26 @@
 openapi: 3.1.0
 info:
-  title: Browser Service V2 HTTP Contract
-  version: 0.1.0-proposed
+  title: Browser Service V2 — OpenAI Chat Completions Model Provider
+  version: 0.2.0-proposed
   description: >-
-    Proposed design contract only; not implemented. An HTTP 202 is a durable
-    acceptance acknowledgement, not proof of browser Send/Collect.
+    Proposed model-provider wire contract; NOT IMPLEMENTED. Browser Harness is an
+    internal model backend. A successful response requires verified model-output
+    semantics; HTTP 200 and syntactically valid JSON do not establish agent-loop
+    tool-call compatibility. See SPEC.md for the feasibility gate.
 servers:
   - url: http://127.0.0.1:8766
-    description: Example loopback development address; actual base URL is client configurable.
+    description: Example local address; the actual endpoint is configurable.
 security:
   - bearerAuth: []
 paths:
-  /v1/health:
+  /health:
     get:
       operationId: getHealth
       security: []
-      summary: Process liveness without browser or session access
+      summary: Service liveness only; never opens a browser
       responses:
         "200":
-          description: Service is alive
+          description: Process alive
           content:
             application/json:
               schema:
@@ -28,288 +30,404 @@ paths:
                 properties:
                   status:
                     const: ok
-  /v1/connections:
+  /v1/models:
     get:
-      operationId: listConnections
-      summary: List authorized safe metadata for pre-registered connections
+      operationId: listModels
+      summary: Return configured model IDs only; advertise no unverified capabilities
       responses:
         "200":
-          description: Accessible connections
+          description: OpenAI-compatible model listing
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required: [connections]
-                properties:
-                  connections:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/Connection"
+                $ref: "#/components/schemas/ModelList"
         "401":
           $ref: "#/components/responses/Unauthorized"
-  /v1/operations:
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/chat/completions:
     post:
-      operationId: createOperation
-      summary: Accept one Send or Collect operation; never queue
+      operationId: createChatCompletion
+      summary: Standard Chat Completions call backed by Browser Harness
+      description: >-
+        A model request, not a Browser Send Operation. For stream=false return
+        one verified chat.completion object. For stream=true return valid SSE
+        chat.completion.chunk frames ending with data: [DONE]. An HTTP 202 or
+        text-only substitute for required tool calls is never valid. Browser
+        Send/Collect/Resume/Attempt IDs stay server-private. Optional
+        Idempotency-Key is not required by normal model clients; UNKNOWN
+        Browser Sends must not be blindly retried.
       parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Optional caller identity for deduplication, never required for Pi/OpenCode.
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              oneOf:
-                - $ref: "#/components/schemas/SendRequest"
-                - $ref: "#/components/schemas/CollectRequest"
+              $ref: "#/components/schemas/CompletionRequest"
       responses:
-        "202":
-          description: Durable acceptance only; query operation for verified outcome
+        "200":
+          description: Complete verified model response or a well-formed SSE stream
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Operation"
+                $ref: "#/components/schemas/CompletionResponse"
+            text/event-stream:
+              schema:
+                type: string
+                description: >-
+                  SSE data: JSON chat.completion.chunk lines, then data: [DONE].
+                  For tool calls, deltas must have correlated index/id/function.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
-          $ref: "#/components/responses/NotFound"
+          $ref: "#/components/responses/ModelNotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/Unprocessable"
         "429":
           $ref: "#/components/responses/RateLimited"
-  /v1/operations/{operationId}:
-    get:
-      operationId: getOperation
-      summary: Read client-owned normalized operation status
-      parameters:
-        - $ref: "#/components/parameters/OperationId"
-      responses:
-        "200":
-          description: Authorized operation state
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Operation"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-  /v1/operations/{operationId}/reconcile:
-    post:
-      operationId: reconcileSend
-      summary: Read-only reconcile same possibly submitted Send; never dispatch
-      parameters:
-        - $ref: "#/components/parameters/OperationId"
-      responses:
-        "200":
-          description: Same operation with reconciled or unchanged status
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Operation"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/Timeout"
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: opaque
-  parameters:
-    OperationId:
-      name: operationId
-      in: path
-      required: true
-      description: Opaque service-issued ID, not a Browser Harness Attempt ID
-      schema:
-        type: string
-        minLength: 1
-        maxLength: 128
-    IdempotencyKey:
-      name: Idempotency-Key
-      in: header
-      required: true
-      description: >-
-        Stable client request identity. Same client/key/body returns same operation;
-        same client/key/different body is 409 IDEMPOTENCY_CONFLICT.
-      schema:
-        type: string
-        minLength: 8
-        maxLength: 128
-        pattern: "^[A-Za-z0-9._-]+$"
   schemas:
-    Connection:
+    ModelList:
       type: object
       additionalProperties: false
-      required: [connectionId, provider, status, capabilities]
+      required: [object, data]
       properties:
-        connectionId:
-          type: string
-        provider:
-          type: string
-          enum: [chatgpt]
-        status:
-          type: string
-          enum: [ready, busy, quarantined, unavailable]
-        capabilities:
+        object:
+          const: list
+        data:
           type: array
           items:
-            type: string
-            enum: [send, collect, reconcile]
-    SavedTarget:
+            $ref: "#/components/schemas/Model"
+    Model:
       type: object
       additionalProperties: false
-      required: [conversationId, canonicalUrl]
+      required: [id, object, created, owned_by]
       properties:
-        conversationId:
-          type: string
-          format: uuid
-        canonicalUrl:
-          type: string
-          format: uri
-          description: >-
-            Service must verify the exact https://chatgpt.com/c/{conversationId}
-            host and identity. Not an arbitrary navigation URL.
-    SendRequest:
-      type: object
-      additionalProperties: false
-      required: [kind, connectionId, target, message]
-      properties:
-        kind:
-          const: send
-        connectionId:
+        id:
           type: string
           minLength: 1
-          maxLength: 128
-        target:
-          $ref: "#/components/schemas/SavedTarget"
-        message:
+        object:
+          const: model
+        created:
+          type: integer
+          description: Source-grounded model registration timestamp, never invented.
+        owned_by:
+          type: string
+          description: Service-defined provider label, not a claim of model ownership.
+    CompletionRequest:
+      type: object
+      additionalProperties: false
+      required: [model, messages]
+      properties:
+        model:
           type: string
           minLength: 1
-          maxLength: 100000
-          description: Private request body; must never appear in public logs/CI.
-    CollectRequest:
+          description: Server-registered ID; no arbitrary URLs or profile paths.
+        messages:
+          type: array
+          minItems: 1
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/SystemMessage"
+              - $ref: "#/components/schemas/UserMessage"
+              - $ref: "#/components/schemas/AssistantMessage"
+              - $ref: "#/components/schemas/ToolMessage"
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/FunctionTool"
+        tool_choice:
+          oneOf:
+            - type: string
+              enum: [none, auto, required]
+            - $ref: "#/components/schemas/ToolChoice"
+        stream:
+          type: boolean
+          default: false
+        stream_options:
+          type: object
+          additionalProperties: false
+          properties:
+            include_usage:
+              type: boolean
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+        max_tokens:
+          type: integer
+          minimum: 1
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        parallel_tool_calls:
+          type: boolean
+        n:
+          type: integer
+          minimum: 1
+          maximum: 1
+      description: >-
+        Accepted fields must be faithfully supported. If the Browser backend
+        cannot honor a valid supplied option, respond with a typed unsupported
+        error; do not silently drop it. Other OpenAI parameters are deferred.
+    SystemMessage:
       type: object
       additionalProperties: false
-      required: [kind, sendOperationId]
+      required: [role, content]
       properties:
-        kind:
-          const: collect
-        sendOperationId:
+        role:
+          type: string
+          enum: [system, developer]
+        content:
+          type: string
+    UserMessage:
+      type: object
+      additionalProperties: false
+      required: [role, content]
+      properties:
+        role:
+          const: user
+        content:
+          type: string
+    AssistantMessage:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role:
+          const: assistant
+        content:
+          type: [string, "null"]
+        tool_calls:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolCall"
+    ToolMessage:
+      type: object
+      additionalProperties: false
+      required: [role, tool_call_id, content]
+      properties:
+        role:
+          const: tool
+        tool_call_id:
           type: string
           minLength: 1
-          maxLength: 128
-          description: Must reference same client's submitted Send Operation.
-    Operation:
+        content:
+          type: string
+    FunctionTool:
       type: object
       additionalProperties: false
-      required: [operationId, kind, status, createdAt, updatedAt]
+      required: [type, function]
       properties:
-        operationId:
+        type:
+          const: function
+        function:
+          type: object
+          additionalProperties: false
+          required: [name, parameters]
+          properties:
+            name:
+              type: string
+              minLength: 1
+            description:
+              type: string
+            parameters:
+              type: object
+              description: Tool's JSON Schema, passed as structured data.
+              additionalProperties: true
+    ToolChoice:
+      type: object
+      additionalProperties: false
+      required: [type, function]
+      properties:
+        type:
+          const: function
+        function:
+          type: object
+          additionalProperties: false
+          required: [name]
+          properties:
+            name:
+              type: string
+    ToolCall:
+      type: object
+      additionalProperties: false
+      required: [id, type, function]
+      properties:
+        id:
           type: string
           minLength: 1
-        kind:
-          type: string
-          enum: [send, collect]
-        status:
-          type: string
-          enum: [accepted, running, submitted, completed, unknown, failed]
-          description: submitted for verified Send, completed for verified Collect.
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
-        result:
-          $ref: "#/components/schemas/Result"
-        error:
-          $ref: "#/components/schemas/Error"
-    Result:
+        type:
+          const: function
+        function:
+          type: object
+          additionalProperties: false
+          required: [name, arguments]
+          properties:
+            name:
+              type: string
+              minLength: 1
+            arguments:
+              type: string
+              description: Valid JSON arguments string, not arbitrary prose.
+    CompletionResponse:
       type: object
       additionalProperties: false
-      required: [verification]
+      required: [id, object, created, model, choices]
       properties:
-        verification:
+        id:
           type: string
-          enum: [none, send_verified, response_verified, unavailable]
-        text:
+        object:
+          const: chat.completion
+        created:
+          type: integer
+        model:
           type: string
-          maxLength: 200000
-          description: Authorized sensitive Collect result; never persisted to public logs.
-    Error:
-      type: object
-      additionalProperties: false
-      required: [code, message]
-      properties:
-        code:
-          type: string
-          enum:
-            - VALIDATION_ERROR
-            - UNAUTHORIZED
-            - NOT_FOUND
-            - BROWSER_BUSY
-            - IDEMPOTENCY_CONFLICT
-            - INVALID_STATE
-            - TARGET_MISMATCH
-            - UNSUPPORTED_TARGET
-            - RATE_LIMITED
-            - SEND_OUTCOME_UNKNOWN
-            - CONNECTION_QUARANTINED
-            - RESULT_UNAVAILABLE
-            - BACKEND_UNAVAILABLE
-        message:
-          type: string
-          description: Sanitized human-readable message without private identifiers.
-    ErrorResponse:
+        choices:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [index, message, finish_reason]
+            properties:
+              index:
+                const: 0
+              message:
+                $ref: "#/components/schemas/AssistantMessage"
+              finish_reason:
+                type: string
+                enum: [stop, length, tool_calls, content_filter]
+        usage:
+          type: object
+          description: Optional; only if measured from authoritative evidence.
+          additionalProperties: false
+          required: [prompt_tokens, completion_tokens, total_tokens]
+          properties:
+            prompt_tokens:
+              type: integer
+              minimum: 0
+            completion_tokens:
+              type: integer
+              minimum: 0
+            total_tokens:
+              type: integer
+              minimum: 0
+    ErrorEnvelope:
       type: object
       additionalProperties: false
       required: [error]
       properties:
         error:
-          $ref: "#/components/schemas/Error"
+          type: object
+          additionalProperties: false
+          required: [message, type, code]
+          properties:
+            message:
+              type: string
+              description: Sanitized, no prompt, URL, profile or private identifiers.
+            type:
+              type: string
+              enum: [invalid_request_error, authentication_error, not_found_error, conflict_error, rate_limit_error, api_error]
+            code:
+              type: string
+              enum:
+                - INVALID_REQUEST
+                - UNSUPPORTED_PARAMETER
+                - UNSUPPORTED_CAPABILITY
+                - UNAUTHORIZED
+                - MODEL_NOT_FOUND
+                - BROWSER_BUSY
+                - SEND_OUTCOME_UNKNOWN
+                - HISTORY_FIDELITY_UNVERIFIED
+                - TOOL_CALL_FIDELITY_UNVERIFIED
+                - RATE_LIMITED
+                - BROWSER_UNAVAILABLE
+                - RESPONSE_UNVERIFIED
+                - BACKEND_TIMEOUT
   responses:
     BadRequest:
-      description: Invalid API shape or header
+      description: Invalid request shape
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
+            $ref: "#/components/schemas/ErrorEnvelope"
     Unauthorized:
-      description: Unauthorized client
+      description: Missing or invalid model API credential
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
-    NotFound:
-      description: Missing or inaccessible scoped resource
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ModelNotFound:
+      description: Unknown or unavailable model
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
+            $ref: "#/components/schemas/ErrorEnvelope"
     Conflict:
-      description: Busy, invalid state, idempotency conflict or quarantine
+      description: Busy or unresolved original Browser Send; no auto-retry
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
+            $ref: "#/components/schemas/ErrorEnvelope"
     Unprocessable:
-      description: Invalid or unsupported saved conversation target
+      description: Unsupported model capability or generation parameter
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
+            $ref: "#/components/schemas/ErrorEnvelope"
     RateLimited:
-      description: Authenticated caller exceeded limit
+      description: Rate limit from service or Browser backend
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorResponse"
+            $ref: "#/components/schemas/ErrorEnvelope"
+    BadGateway:
+      description: Browser response or tool-call fidelity not verified
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Unavailable:
+      description: Browser backend unavailable or unresolved
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Timeout:
+      description: Backend timed out; no blind retry of a possibly sent turn
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"

@@ -1,0 +1,28 @@
+name: BSV2 Model Provider Docs Contract
+on:
+  push:
+    paths:
+      - 'docs/browser-service-v2/**'
+      - 'BROWSER_SERVICE_V2_IMPLEMENTATION_STATUS.md'
+      - 'scripts/check-bsv2-model-provider-docs.py'
+      - '.github/workflows/bsv2-model-provider-docs.yml'
+  pull_request:
+    paths:
+      - 'docs/browser-service-v2/**'
+      - 'BROWSER_SERVICE_V2_IMPLEMENTATION_STATUS.md'
+      - 'scripts/check-bsv2-model-provider-docs.py'
+      - '.github/workflows/bsv2-model-provider-docs.yml'
+permissions:
+  contents: read
+jobs:
+  validate-model-provider-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned document parser
+        run: python -m pip install PyYAML==6.0.2
+      - name: Validate BSV2 spec and model wire
+        run: python scripts/check-bsv2-model-provider-docs.py

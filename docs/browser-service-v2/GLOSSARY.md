@@ -1,33 +1,35 @@
 # Browser Service V2 — Domain Glossary
 
-**Browser Service**: Independently running HTTP server for controlled browser operations. _Avoid_: Queqiao extension.
+**BSV2 / Model Backend**: Independent HTTP service presenting Browser Harness as a model provider; not an Agent Runtime or Tool.
 
-**Client**: Authorized consumer of the HTTP interface. _Avoid_: Worker.
+**Agent / Model Consumer**: Pi, OpenCode, Orca or another unmodified agent loop that calls its selected model API.
 
-**Connection**: Opaque, server-authorized reference to a browser access identity. _Avoid_: raw profile name or directory.
+**Model Provider Configuration**: Consumer-owned `baseUrl`, `api`, credential, model ID. No extension, additional Tool, or framework-specific Browser adapter.
 
-**Owner Host**: Single runtime host that controls a Browser Identity.
+**Chat Completions Request**: Standard `model` + ordered `messages` and optional `tools`, `tool_choice`, `stream`. Not a Browser script or single prompt.
 
-**Browser Identity**: The physical browser/session/profile authority associated with a Connection.
+**Model Response**: Protocol-correct assistant message or SSE chunks; can contain validated `tool_calls` and an accurate `finish_reason`. Plain text alone does not prove coding-agent compatibility.
 
-**Target**: Identity-verified authorized saved conversation.
+**Tool Call**: Model-generated, structured instruction delivered **to the existing agent loop**. BSV2 never executes the agent's tools.
 
-**Operation**: Durable client-scoped request/result identity at the Service interface. _Avoid_: n8n Execution, Harness Run.
+**Tool Result**: `role: tool` message the agent sends back on its next model request, linked by `tool_call_id`.
 
-**Send Operation**: Operation requesting one user turn in a Target.
+**History Projection**: Internal conversion from a model API transcript to one or more Browser UI turns. Fidelity must be evidenced, not assumed.
 
-**Collect Operation**: Operation reading the complete assistant turn attributable to a specific Send.
+**Model Capability**: Only an observed and tested supported feature, e.g. tool calling, streaming, history, input/output types. No guessed model metadata.
 
-**Send Attempt**: Harness-private evidence of a possibly dispatched Send; the source of truth for read-only Resume.
+**Connection / Browser Identity**: Server-private association between a model ID and a browser profile/provider with an exclusive owner.
 
-**Receipt**: Observed evidence and outcome, distinct from HTTP acknowledgement.
+**Owner Host**: Sole host authorized to mutate one physical Browser identity.
 
-**UNKNOWN**: A side effect may have occurred but has not been proven or ruled out. _Avoid_: failed, safe-to-retry.
+**Send Attempt**: Browser Harness-private original submission evidence; it may not be replayed if the outcome is uncertain.
 
-**Reconcile**: Read-only recovery of the original Send's evidence. _Avoid_: resend.
+**Collect / Resume / Reconcile**: Browser Harness internal result collection or read-only verification of the original Attempt; not consumer-facing model commands.
 
-**Quarantined Connection**: Connection frozen because ownership/proof cannot be verified.
+**UNKNOWN**: Submission or result possibly occurred but cannot be proven; not equivalent to safe-to-retry.
 
-**Idempotency Key**: Client-created identity of one submission intent mapped to one Operation, including repeated HTTP calls.
+**Idempotency**: Optional caller-supplied request identity can help, but no nonstandard required field may be imposed on Pi's ordinary model request.
 
-**Workflow**: A task-specific native n8n graph. _Avoid_: fixed Browser Service orchestration template.
+**Completion**: Verified model API response semantics; distinct from HTTP 202, browser click, or model-written textual claim.
+
+**Workflow**: Optional external n8n graph; not part of BSV2 or an agent model loop.

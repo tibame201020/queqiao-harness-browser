@@ -1,76 +1,88 @@
-# Browser Service V2 — Product and Domain Contract
+# Browser Service V2 — Model Provider API Contract
 
-Revision: proposed V2 implementation baseline, 2026-10-29. This is a plan, not a running service.
+Status: **proposed, NOT IMPLEMENTED**. Revised 2026-11-05. Supersedes the 2026-10-29 operation-first proposal.
 
-## Goal
+## Product goal and non-goals
 
-An authorized Pi, OpenCode, n8n or other system configures a normal HTTP(S) **base URL** and credential to operate an authorized browser. The caller does not install Browser Harness, see a browser profile, depend on Queqiao, or know site adapter details. HTTP is an operation API, **not** an OpenAI-compatible model completion endpoint.
+BSV2 exposes Browser Harness as a **model backend** over a standard LLM API. An existing agent (Pi, OpenCode, Orca, etc.) changes only its model/provider configuration: `baseUrl`, `api`, credential, model ID. The agent sends model requests and receives model responses through its **existing model call**. Its own reasoning loop, tools, scheduler, and governance remain unchanged.
 
-## Bounded contexts
+Acceptance is **NOT** "Pi can invoke a browser tool." No Pi extension, MCP tool, Orca AgentHarness, custom CLI wrapper, workflow node, or agent loop patch is permitted to establish the primary acceptance claim.
 
-| Responsibility | Owner |
-| --- | --- |
-| Task planning, approvals, dependencies and business retries | Caller / Paperclip / n8n |
-| HTTP, authorization, Connection registry, Operation lifecycle and receipts | Browser Service |
-| Browser process, profile/session, site adapter, Send Attempt, strict Send/Resume proof | Browser Harness |
-| Site-specific ChatGPT turn interpretation | Existing Harness ChatGPT adapter |
-| Native workflow graph, scheduler and execution | n8n (optional) |
-| Remote MCP transport | Queqiao (optional) |
+BSV2 is a black box: HTTP model protocol outside; Browser Harness trigger/collect/resume and authenticated browser inside. It is **not** an Agent Runtime, orchestration framework, general-purpose browser/CDP proxy, or alternative tool dispatcher. Queqiao, n8n, Paperclip, Pi, and Orca are optional consumers, not startup dependencies.
 
-Do not create a second Send verifier, profile manager or workflow scheduler inside the service. Preserve an internal backend seam without implementing unused backends in V2.
+## Target API and verified references
 
-## V2 first slice / non-goals
+Initial target: **OpenAI Chat Completions** (`openai-completions`), via:
 
-**Supported:** preconfigured/authorized Browser Connection → saved **existing ChatGPT Conversation** → one message Send → durable receipt → same-Send read-only Resume when UNKNOWN → Collect one stable assistant response linked to that Send.
+- `GET /v1/models` — available service-configured model IDs and explicit capability metadata.
+- `POST /v1/chat/completions` — standard model request/response, including `stream: true` SSE.
+- `GET /health` — independent liveness, outside the model protocol.
 
-**Not in V2:** new-conversation creation, generic browser RPA/CDP proxy, raw JS, public profile creation, generic provider support, a fixed n8n graph, webhook callback framework, job queue, Paperclip Issue CRUD, multi-owner Windows+WSL browser mutation, and automatic retry of an uncertain Send. Harness may already support these internally; the new HTTP contract does not promise them.
+Do not advertise `/v1/responses`, Anthropic Messages, embeddings, audio, image input/output, or universal OpenAI parity without separate conformance proof.
 
-## Objects
+References:
+- Pi model configuration: https://pi.dev/docs/latest/models
+- Pi agent loop: https://pi.dev/docs/latest/how-pi-works
+- Pi custom providers (used only if an API is unsupported): https://pi.dev/docs/latest/custom-provider
+- OpenCode custom provider: https://opencode.ai/docs/providers
+- OpenAI Chat Completions: https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
+- OpenAI streamed chunks: https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events
 
-**Client** is an authorized API consumer. **Connection** is a server-registered opaque handle to one owner-host-local Harness Profile. **Target** is a validated saved Conversation (provider + canonical ID/URL). **Operation** is a durable, client-owned request and result identity. **Send Attempt** is Harness's existing private durable proof created before possible message submission. **Receipt** distinguishes evidence of submission/completion from transport success. Full terms live in GLOSSARY.
+The exact installed Pi/OpenCode versions and compatible request/response behavior must be observed during implementation. A documented example is not runtime proof.
 
-## Lifecycle and proof
+## Primary acceptance: provider substitution
 
-Operation states: accepted → running → submitted / completed / unknown / failed. A submitted Send means the original unique User Turn was verified using the existing Harness proof. A completed Collect means a stable full assistant reply was verified to follow the specified submitted Send in the exact owning conversation. HTTP 202, click success, blank composer, worker-generated marker, n8n success, and completed network request are **not** submission/completion proof.
+With the **unmodified, real Pi executable** and its standard `models.json` entry pointing at BSV2, Pi must:
+1. Select BSV2 as its model and send a real Chat Completions request with system/user/assistant/tool history and the tools it already has.
+2. Receive protocol-correct model output, including **structured tool calls** where tools are requested; execute those calls with its existing tool dispatcher, without BSV2 knowing or invoking Pi's tools.
+3. Send the resulting `role: tool` messages in a subsequent model request, then receive an attributable follow-up response.
+4. Handle `stream: true`, cancellation, an error, and one multi-turn continuation without an extension or change to Pi's agent loop.
 
-An UNKNOWN Send may have been delivered. **Only a read-only reconcile of the same persisted Harness Attempt** may promote it to submitted; never resubmit. Missing/corrupt attempt, changed browser binding, mismatched target, duplicate/stale message, or denied content access yields UNKNOWN/quarantine. Do not clear a private Send lock merely because the service process has restarted. Even a known failed HTTP call does not establish that no browser Send occurred.
+A successful text-only chat, a curl response, or a separate Pi Tool call is **insufficient**. The same condition applies to OpenCode as a second, independent provider-config consumer. A test may use a harmless synthetic tool; never write real credentials or user data to CI.
 
-## Owner/lock model
+**Critical feasibility risk:** Web ChatGPT and other browser sites expose human-facing text, not proven native OpenAI `tool_calls` frames or guaranteed tool-result role semantics. They might not safely represent the tools, history, system roles, finish reasons, or streaming semantics required by an agent loop. The early **BSV2-001 feasibility gate** must prove end-to-end tool-call fidelity with real Browser Harness evidence; do not infer compatibility from correctly formatted response JSON or from model-written prose. If this gate fails, mark full model-provider parity **BLOCKED**, report the actual missing capability, and do not claim completion by fabricating `tool_calls`.
 
-One **Owner Host** controls one Browser Identity (profile + browser binding). Windows and WSL cannot independently act as safe co-owners with separate local lock files. Clients on other hosts use the HTTP URL.
+## Wire semantics
 
-All mutating pathways on the Owner Host (service, existing Harness extension, direct Runner/supervisor) must use a common physical-profile lock or be disabled for service-owned profiles. Harness's per-Send active.lock is not a substitute for the shared lease. A lock must survive concurrent processes and be recovered conservatively; it must never release an ambiguous Send's durable guard.
+Requests use the published OpenAI Chat Completions shape, not a bespoke `{prompt}` or `sendOperationId` API. At minimum validate `model`, ordered `messages` (including `system`/`developer` as negotiated, `user`, `assistant`, `tool`), optional `tools`/`tool_choice`, `stream`, and supported generation settings. Either implement a field faithfully or return a documented unsupported-parameter error. Do not silently ignore tool definitions or history.
 
-A Connection binding cannot be silently changed while any Operation/Attempt is unresolved. Retire/quarantine it with explicit operator action if proof is permanently unavailable.
+For non-streaming success, return `chat.completion` with a valid assistant message, content or validated `tool_calls`, accurate `finish_reason`, stable response ID and model. `finish_reason: tool_calls` requires actual validated calls with tool-call IDs, tool names from the supplied allowlist, and well-formed arguments. Do not translate ordinary advice/text into unauthorized tool executions. Never synthesize usage/cost/token counts as if measured.
 
-## Durability and idempotency
+For `stream: true`, respond with valid `text/event-stream` ChatCompletionChunk events and `data: [DONE]`. Respect indexed and correlated tool-call deltas; a buffered-after-Collect stream may be conformant in structure but is **not real-time token streaming** and must be tested against real clients and their timeouts. Cancellation must stop active work where safely possible; it cannot undo a possibly submitted browser Send.
 
-Persist the client-scoped Operation acceptance and idempotency fingerprint **before** dispatch. Keep a durable 1:1 Operation→Harness Attempt mapping when an Attempt exists. Same client + Idempotency-Key + same canonical request returns **the same** Operation ID; a mismatched request returns 409 IDEMPOTENCY_CONFLICT. Fingerprint content using a stable secret-keyed HMAC, not a loggable raw prompt hash. Persist the secret in approved owner-local private storage, never Git.
+Standard errors have a stable model-API error envelope and HTTP status. No `202 accepted` as the final answer to a model request, no 200 OK with an incomplete result, and no silent retries of an uncertain Send. Requests unsupported by the backend must fail explicitly; do not return a text-only substitute to a request needing tool calls.
 
-V2 has **no queue**: busy Connection → 409 BROWSER_BUSY, without recording a later-to-be-dispatched job. A crash after acceptance must not cause automatic replay. If no definitive proof exists, recover as UNKNOWN/quarantined. Keep raw prompt only in memory during dispatch or in existing protected Harness Send Attempt where needed for strict read-only Resume. An accepted Operation is not authority to reconstruct/send a prompt after restart.
+## Conversation and tool-history translation
 
-Persist safe metadata/status privately; public responses have bounded size and client authorization. Full model response is sensitive; if a restart loses in-memory response text, report result unavailable and require a new **read-only Collect**, never resend. Never garbage collect unresolved Attempt proof automatically; define retention/configuration and explicit operator handling for resolved records.
+Browser UI conversations are **not** native model API conversations. Normal Chat Completions clients send the full message history and do not send a Browser conversation URL, session ID, or custom operation handle. BSV2 must keep Browser profile/Conversation/Attempt identity **server-side**, with an explicit, tested projection from API history to Browser input, and from Browser output to model response.
 
-## Target and security
+The first-turn route, subsequent-turn mapping, role boundaries, tool-call IDs, and tool-result history require evidence. No client modification or extra `conversationId` field is allowed. Never assume a browser Conversation matches a tool transcript merely because its latest text looks similar. If accurate history/role continuation is impossible, fail the relevant capability gate rather than presenting altered semantics as native.
 
-Connection IDs are allowlisted in server-local config. API clients cannot set browser profile paths, arbitrary URLs, debugger port, adapterConfig or CDP endpoint. Target includes saved Conversation ID + canonical URL; validate host, ID format, connection provider, exact identity match and authorized client before browser work. Reject mismatches rather than browsing elsewhere. Do not return actual conversation URL, profile location, cookies, prompt or binding hash in public error bodies, logs or CI.
+Use only server-registered model IDs. Each model maps privately to an authorized Browser Harness provider/profile policy; requesters cannot supply site URLs, CDP/debug endpoints, profile paths, or login credentials. A model can advertise `tools: true` only after the real round-trip passes. Do not claim model context size, token limits, or tool support from guesses.
 
-Require API Bearer credential scoped to Connection and Operation. Loopback-only plain HTTP may be opt-in; remote requires TLS and restricted bind/firewall or approved proxy. Health never opens a browser. Errors use typed safe codes. Unknown fields are rejected to avoid accidentally exposing backend parameters.
+## Lifecycle, durability, and error ownership
 
-## Public HTTP behaviors
+Keep existing Browser Harness ownership of actual browser sessions, one-owned Send, proof of submission, Collect, and read-only Resume. BSV2 may persist private internal operation/attempt IDs; they do **not** become mandatory fields in a Chat Completions request.
 
-The canonical proposed contract is OPENAPI.yaml.
+A server-side Send result has distinct states: not_sent, submitted, completed, unknown. A browser click or HTTP acknowledgement is never proof of delivery. An ambiguous Send may already have occurred: keep the original Attempt, reconcile it **read-only**, and never dispatch a replacement automatically. An HTTP client retry has no intrinsic idempotency key; optional `Idempotency-Key` can improve deduplication but **must not be required** for standard Pi/OpenCode requests. Without caller identity, BSV2 must not promise exactly-once behavior across arbitrary retries: fence unresolved browser identities conservatively and surface a recoverable operational error.
 
-- GET /v1/health: local service liveness only.
-- GET /v1/connections: caller-authorized safe metadata/capabilities, no profile paths.
-- POST /v1/operations: create **send** (Connection, Target, prompt) or **collect** (source submitted Send Operation ID) with Idempotency-Key.
-- GET /v1/operations/{operationId}: client-scoped safe operation status and bounded authorized result.
-- POST /v1/operations/{operationId}/reconcile: read-only resolution of an existing uncertain Send; never a new send.
+One Owner Host controls each Browser identity. All mutation entrypoints (service, direct Runner, extension/supervisor) must honor the same physical owner lease or be disabled on service-owned profiles. Windows and WSL must not independently mutate the same browser profile. Never publish private prompts, Browser profiles, conversation URLs/IDs, cookies, screenshots, model secrets, or unredacted responses in Git/CI.
 
-Return 202 only after acceptance is durably recorded; 202 is not a terminal receipt. Unauthorized owner access uses 404 to avoid leaking existence. No operation may bypass the exact owning Connection.
+The model backend may be unavailable, slow, challenged, rate-limited, or unable to verify a response. Fail with explicit safe error semantics; do not pretend a browser-generated partial/unknown result is a successful model completion. Service startup and `GET /health` must not require Queqiao or launch Chrome.
 
-## Verification and release acceptance
+## Explicit deferrals
 
-Contract validation (schema, status codes, bad inputs, idempotency); TDD negatives (duplicate send, wrong target, lock races, unknown/late Send, stale answer, restart); two-process shared-owner lock test and direct Runner-path coverage; HTTP tests against fake backend and real isolated process; Pi-compatible client using only base URL and credential; separately authorized, fresh synthetic saved Conversation E2E + independent receipt checks; GitHub Actions typecheck/test/build and security scan.
+- No framework-specific wrapper, Pi Tool, OpenCode Tool, Orca AgentHarness, Paperclip native API, or n8n graph.
+- No generic browser RPA/JavaScript/CDP passthrough or arbitrary public profile creation.
+- No guarantee of backend-native function calling, true incremental token streaming, true token usage, guaranteed role fidelity or model context size **until verified**.
+- No additional model APIs before OpenAI Chat Completions conformance and real-client acceptance.
 
-Release requires the HTTP service to start without Queqiao or Paperclip, preserve Harness recovery semantics, and let a **non-Pi** HTTP client replace Pi without modifying server or Harness. A documentation-only review does not establish any of these gates as passed.
+## Verification and release gates
+
+1. **Feasibility first:** executable real-site/synthetic tool-call + tool-result continuation, history mapping, cancellation, and streaming evidence. Fail or mark BLOCKED if Browser UI cannot satisfy the model contract. Browser Send must be exactly once.
+2. Machine-validate OpenAPI 3.1 against implementation; test supported/unsupported fields, strict errors, `stream` and tool-call sequence, privacy, auth, crashes, duplicate requests, and UNKNOWN recovery.
+3. Unmodified Pi model configuration only: model selection, actual request, harmless tool invocation through Pi's native dispatcher, tool-result round-trip, and subsequent model request.
+4. Independent OpenCode-compatible provider test using configuration only. No Browser-specific code installed in either agent.
+5. TDD RED→GREEN on each implementation Ticket; unit/integration tests in GitHub Actions on exact PR SHA; independent review and fresh authenticated synthetic browser E2E. Do not merge/release from text-only tests or documentation claims.
+
+If proof fails, keep the contract and record an explicit product feasibility blocker; do not silently switch back to Tool-based integration.
