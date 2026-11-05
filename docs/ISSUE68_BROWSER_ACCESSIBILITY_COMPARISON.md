@@ -30,4 +30,4 @@ The read-only `composerResolution` diagnostic is restricted to `css | aria | amb
 
 The synthetic DOM replacement test proves handling of selector/element identity drift. It does **not** establish that the original ChatGPT `composer_absent` / `composer_uneditable` issue was caused by selector drift. Site hydration, authentication challenges, a genuinely missing Composer, and unstable navigation remain distinct failure classes. Do not claim root-cause remediation until real failed-page evidence and independent review support it. Do not commit account data, actual accessibility snapshots, private screenshots, or Conversation IDs.
 
-**Merge gate:** current-head CI, authenticated branch E2E, independent review, and disposition of original #68 failure. Keep PR #77 Draft until met.
+**Merge gate (re-scoped):** current-head CI, authenticated normal-path Browser E2E, representative isolated dynamic-DOM failure matrix, independent review, and documentation. The original Composer incident is *not* a prerequisite and its root cause is outside the branch scope. Keep PR #77 Draft until those stability/reliability gates are met.

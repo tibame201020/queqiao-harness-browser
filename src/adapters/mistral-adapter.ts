@@ -2,6 +2,7 @@ import { createWebChatAdapter, type WebChatSite } from "./web-chat.js";
 export const mistralSite:WebChatSite = {
  id:"mistral",origin:"https://chat.mistral.ai",bootstrapUrl:"https://chat.mistral.ai/work",newChatUrl:"https://chat.mistral.ai/work",
  conversationPaths:["work"],editor:'form [contenteditable="true"].ProseMirror:visible',
+ semanticEditor:{roles:["textbox"],sendWithinForm:'button[aria-label="Send"][type="submit"]'},
  send:'form button[aria-label="Send"][type="submit"]:visible',
  assistant:'[data-message-part-type="answer"][data-testid="text-message-part"]',
  stop:'form button[aria-label*="Stop" i]:visible, form button[aria-label*="Cancel" i]:visible',

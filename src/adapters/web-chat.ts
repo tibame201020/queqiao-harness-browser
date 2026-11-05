@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Page } from "playwright-core";
 import type { BrowserSession } from "../core/session.js";
 import type { HarnessAdapter } from "./types.js";
+import { resolveSemanticEditor, type SemanticEditorContract } from "../core/semantic-editor.js";
 
 export type WebChatSite = {
   id: "claude" | "mistral" | "grok";
@@ -10,6 +11,8 @@ export type WebChatSite = {
   newChatUrl: string;
   conversationPaths: readonly string[];
   editor: string;
+  /** Optional provider-owned Accessibility fallback, never positional Send guessing. */
+  semanticEditor?: Pick<SemanticEditorContract, "roles" | "sendWithinForm">;
   send: string;
   assistant: string;
   stop: string;
@@ -66,6 +69,11 @@ const pause = (page:Page, ms:number) => page.waitForTimeout(ms);
 async function visible(page:Page, selector:string):Promise<boolean> {
   try { return await page.locator(selector).first().isVisible(); } catch { return false; }
 }
+async function resolveWebChatEditor(site:WebChatSite,page:Page) {
+  if (!site.semanticEditor) return {source:"css" as const,editor:page.locator(site.editor).first()};
+  const result=await resolveSemanticEditor(page,{css:site.editor,...site.semanticEditor});
+  return {source:result.source,editor:result.editor};
+}
 async function inspect(site:WebChatSite, page:Page) {
   const url=page.url();
   if (!url.startsWith(site.origin+"/") && url!==site.origin) return {status:"unavailable",reason:"FOREIGN_ORIGIN",url,provider:site.id};
@@ -75,7 +83,8 @@ async function inspect(site:WebChatSite, page:Page) {
   try { shellText=await page.locator("body").innerText({timeout:1000}); } catch {}
   if (/Cloudflare/i.test(shellText) && /security verification|安全驗證|verify you are human|checking your browser|安全服務/i.test(shellText))
     return {status:"unavailable",reason:"SITE_CHALLENGE",retryable:false,url,provider:site.id};
-  if (await visible(page,site.editor)) return {status:"ready",url,provider:site.id};
+  const editor=await resolveWebChatEditor(site,page);
+  if (editor.editor && await editor.editor.isVisible().catch(()=>false)) return {status:"ready",url,provider:site.id};
   if (await visible(page,site.loading)) return {status:"pending",reason:"HYDRATING",url,provider:site.id};
   return {status:"unavailable",reason:"COMPOSER_NOT_FOUND",retryable:true,url,provider:site.id};
 }
@@ -111,10 +120,15 @@ async function trigger(site:WebChatSite,page:Page,cfg:WebChatConfig,args:Record<
   try { connectorVerification=await ensureConnector(site,page,cfg); }
   catch { return {status:"unavailable",provider:site.id,reason:"CONNECTOR_UI_UNAVAILABLE",retryable:true}; }
   if(!connectorVerification) return {status:"unavailable",provider:site.id,reason:"CONNECTOR_NOT_SELECTED"};
-  const composer=page.locator(site.editor).first();
+  const resolved=await resolveWebChatEditor(site,page);
+  if (!resolved.editor) return {status:"unavailable",provider:site.id,reason:"COMPOSER_NOT_READY",retryable:true};
+  const composer=resolved.editor;
   try { await composer.waitFor({state:"visible",timeout:15000}); await composer.fill(prompt); }
   catch { return {status:"unavailable",provider:site.id,reason:"COMPOSER_NOT_READY",retryable:true}; }
-  const send=page.locator(site.send).first();
+  // A recovered editor may only use the Send control owned by its verified form.
+  const send=resolved.source==="aria" && site.semanticEditor
+    ? composer.locator("xpath=ancestor::form[1]").locator(site.semanticEditor.sendWithinForm)
+    : page.locator(site.send).first();
   try { await send.waitFor({state:"visible",timeout:10000}); }
   catch { return {status:"unavailable",provider:site.id,reason:"SEND_CONTROL_MISSING",retryable:true}; }
   // From this point a failed Playwright acknowledgement cannot prove whether submission happened.
