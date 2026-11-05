@@ -39,6 +39,16 @@ try {
   assert.equal(rejected,true,"A recovered editor must stay strict after a second candidate appears");
   assert.equal(await page.locator("#original [role=textbox]").innerText(),"ORIGINAL_DRAFT");
   assert.equal(await page.locator("#injected [role=textbox]").innerText(),"OTHER_DRAFT");
+  // Independent review P1: a sole replacement textbox outside the owned Send form
+  // must never receive the original prompt between resolution and fill.
+  await page.setContent(`<main><form id="trusted"><div role="textbox" contenteditable="true" aria-label="Composer"></div><button data-testid="send-button">Send</button></form></main>`);
+  const owned=await resolveSemanticEditor(page,{css:"#missing",roles:["textbox"],sendWithinForm:'button[data-testid="send-button"]'});
+  assert.equal(owned.source,"aria");
+  await page.locator("#trusted").evaluate(node=>node.outerHTML='<div role="textbox" contenteditable="true" aria-label="Search">SEARCH_DRAFT</div>');
+  let replacementRejected=false;
+  try {await owned.editor.fill("SENSITIVE_PROMPT",{timeout:500});} catch {replacementRejected=true;}
+  assert(replacementRejected,"Replacement search input must not inherit Composer locator");
+  assert.equal(await page.getByRole("textbox").innerText(),"SEARCH_DRAFT");
   // ChatGPT-like lifecycle: after dispatch, Send becomes Stop while editor remains empty.
   await page.setContent(`<form><div role="textbox" contenteditable=""></div><button data-testid="send-button" type="button">Send</button></form>`);
   const preSend=await resolveChatGptComposer(page);
@@ -49,5 +59,5 @@ try {
   assert.equal(rejectedAsPreSend.composer,null);
   assert.equal(observedAfterSend.source,"aria");
   assert.equal(await observedAfterSend.composer.innerText(),"");
-  console.log(JSON.stringify({status:"PASS",cases:out,lateDuplicateEditor:{rejected,originalDraftPreserved:true,otherDraftPreserved:true},postclickStop:{presendRejected:true,postclickObserved:true}}));
+  console.log(JSON.stringify({status:"PASS",cases:out,lateDuplicateEditor:{rejected,originalDraftPreserved:true,otherDraftPreserved:true},replacementSearch:{rejected:replacementRejected,searchDraftPreserved:true},postclickStop:{presendRejected:true,postclickObserved:true}}));
 } finally {await browser.close();}

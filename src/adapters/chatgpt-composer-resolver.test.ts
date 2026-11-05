@@ -10,6 +10,7 @@ function fixture(options: { css?:number; semantic?:number; editable?:boolean; vi
     isVisible: vi.fn(async () => options.visible ?? true),
     evaluate: vi.fn(async () => options.editable ?? true),
     locator: vi.fn(() => form),
+    and: vi.fn(function(this: unknown) {return this;}),
   };
   const css = { count: vi.fn(async () => options.css ?? 0), first() {return this;} };
   const page = { locator: vi.fn(() => css), getByRole: vi.fn(() => semantic) };

@@ -40,5 +40,15 @@ export async function resolveSemanticEditor(page: Page, contract: SemanticEditor
   const form = candidate.locator("xpath=ancestor::form[1]");
   if (await form.count().catch(() => -1) !== 1) return none();
   if (!contract.observationOnly && await form.locator(contract.sendWithinForm).count().catch(() => -1) !== 1) return none();
-  return {matches:1,editor:candidate,source:"aria"};
+  // Re-acquisition must preserve the ownership/editability proof, not only the role.
+  // Otherwise a replacement Search textbox can inherit the old role Locator and
+  // receive the prompt after the initial validation but before fill().
+  const editable = ':is([contenteditable="true"],[contenteditable=""],[contenteditable="plaintext-only"])';
+  const qualifiedCss = contract.observationOnly
+    ? `form ${editable}`
+    : `form:has(${contract.sendWithinForm}) ${editable}`;
+  if (typeof candidate.and !== "function") return none();
+  const owned = candidate.and(page.locator(qualifiedCss));
+  if (await owned.count().catch(() => -1) !== 1) return none();
+  return {matches:1,editor:owned,source:"aria"};
 }
