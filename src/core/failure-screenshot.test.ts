@@ -37,6 +37,17 @@ describe("Issue #68 original-tab screenshot at terminal Composer absence", () =>
     }
   });
 
+  it("captures the original noneditable Composer state without changing not_sent", async () => {
+    const f = await fixture();
+    const input = { status: "unavailable", submissionState: "not_sent",
+      diagnostic: { stage: "precompose", precomposeReason: "composer_uneditable", composerMatches: 1,
+        composerVisible: true, composerEditable: false, sameTarget: true } };
+    const result = await captureComposerAbsentFailure(f.page, f.home, f.profileName, input);
+    expect(f.page.screenshot).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ status: "unavailable", submissionState: "not_sent",
+      diagnostic: { precomposeReason: "composer_uneditable", failureScreenshot: { status: "saved" } } });
+  });
+
   it("never captures a successful Send or any post-click unknown", async () => {
     const f = await fixture();
     for (const input of [

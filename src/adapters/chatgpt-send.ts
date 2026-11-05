@@ -112,7 +112,7 @@ type Readiness = {
   composerEditable: boolean;
   promptPresent: boolean | null;
   promptIntegrity: "complete" | "empty" | "truncated" | "mismatch" | "unverifiable" | null;
-  precomposeReason: "draft_present" | "editor_read_failed" | "composer_click_failed" | "composer_absent" | null;
+  precomposeReason: "draft_present" | "editor_read_failed" | "composer_click_failed" | "composer_absent" | "composer_uneditable" | null;
   domReadiness?: { initial: DomReadinessSample; terminal: DomReadinessSample };
   sendSelector: SendSelection["selector"];
   sendMatches: number;
@@ -773,7 +773,9 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
   while (!(latest.state.sameTarget && !latest.state.generationActive
     && latest.state.composerMatches === 1 && latest.state.composerVisible && latest.state.composerEditable)) {
     if (Date.now() - started >= 15_000) throw await precomposeFailure(latest.state,
-      latest.state.composerMatches === 0 ? "composer_absent" : null);
+      latest.state.composerMatches === 0 ? "composer_absent"
+        : latest.state.composerMatches === 1 && latest.state.composerVisible && !latest.state.composerEditable
+          ? "composer_uneditable" : null);
     await page.waitForTimeout(200);
     latest = await inspect(page, "precompose", started, initialId, targetId);
   }
