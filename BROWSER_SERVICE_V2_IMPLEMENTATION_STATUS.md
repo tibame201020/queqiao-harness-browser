@@ -15,6 +15,7 @@ The previous 2026-10-29 **operation-first public HTTP API** is superseded. Inter
 - Revised SPEC, OpenAPI, ADR, TICKETS, README, Glossary, Review Gates and optional engineering handoff are **design documents**.
 - **No BSV2 model-provider implementation or real Pi/OpenCode model-API E2E has been accepted.** Do not infer compatibility from existing Browser Harness trigger/collect or Pi Tool experiments.
 - The first implementation task, BSV2-001, is the **real Browser-backed model API/tool-call feasibility gate**. A failure blocks claims of drop-in agent substitution.
+- **2026-11-05 observation (research branch):** native Pi 0.80.1 selected the Browser-backed Model API via isolated `models.json` and executed its built-in `bash` tool; its subsequent model continuation returned `502 RESPONSE_UNVERIFIED`. Browser Collect remained unverified (`EMPTY_ASSISTANT_TEXT`). BSV2-001 is **PARTIAL/BLOCKED**, not PASS. Detailed sanitized evidence: [FEASIBILITY.md](docs/browser-service-v2/FEASIBILITY.md).
 - GitHub Actions, RED/GREEN implementation tests and release evidence are future execution gates, not claims established by this documentation update.
 
 ## Historical worktrees

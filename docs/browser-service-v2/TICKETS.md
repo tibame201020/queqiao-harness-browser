@@ -1,6 +1,8 @@
 # Browser Service V2 — Model Provider Implementation Tickets
 
-Status: **planned, NONE implemented**. Revised 2026-11-05. Replaces the 2026-10-29 operation-first task scopes. IDs BSV2-001..011 are planning IDs, not GitHub Issues; historical worktree names are not acceptance evidence.
+Status: **planned, NONE implemented or accepted as complete**. Revised 2026-11-05. Replaces the 2026-10-29 operation-first task scopes. IDs BSV2-001..011 are planning IDs, not GitHub Issues; historical worktree names are not acceptance evidence.
+
+**BSV2-001 empirical status: PARTIAL / BLOCKED for full acceptance.** Real Browser tool choice and **unmodified Pi 0.80.1 native `bash` tool execution** through a disposable Model API fixture were observed; the subsequent Pi `role: tool` model continuation returned `502 RESPONSE_UNVERIFIED`, with Browser Collect `EMPTY_ASSISTANT_TEXT`. No downstream ticket is unlocked by a first-tool-use success. See [FEASIBILITY.md](FEASIBILITY.md) for exact evidence, RED→GREEN tests, explicit unverified claims and safe next gate.
 
 ## Acceptance hierarchy
 
