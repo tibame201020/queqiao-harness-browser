@@ -424,3 +424,7 @@ Do not manually publish a version that is intended to be released by this workfl
 When `browser.connection=cdp`, each harness action attaches a short-lived Playwright client to an already running browser. After `trigger`, `collect`, or failure, the harness disconnects the Playwright client. It does **not** stop Chrome or remove the user-owned browser profile. The process must exit without holding an idle CDP connection.
 
 A local headed Chrome + CDP POC verified an authenticated ChatGPT trigger and a completed collect with an exact synthetic marker. This does **not** establish that ChatGPT Web works from a fresh GitHub-hosted Actions runner: that environment showed a browser challenge. For the hybrid architecture, retain the browser in a trusted persistent environment and route short-lived execution through Queqiao Gateway/Worker; a complete ChatGPT-to-GitHub-Actions tool call is a separate acceptance gate. Never commit browser session data.
+
+## WSL Pi ChatGPT tool (optional)
+
+An independent Pi Coding Agent can invoke ChatGPT through the **existing** Windows Browser Harness Runner using `ask_chatgpt`; the Pi Extension is not installed into the n8n 9B Worker by default. Setup, request identity, receipt recovery and live acceptance are documented in [docs/PI_CHATGPT_TOOL.md](docs/PI_CHATGPT_TOOL.md).

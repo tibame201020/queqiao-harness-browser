@@ -10,31 +10,42 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./pi": {
+      "import": "./pi/extension.mjs",
+      "default": "./pi/extension.mjs"
     }
   },
   "files": [
     "dist/",
+    "pi/chatgpt-core.mjs",
+    "pi/windows-runner.mjs",
+    "pi/install.mjs",
+    "pi/extension.mjs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/PI_CHATGPT_TOOL.md"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
-    "check": "npm run typecheck && npm test && npm run build && npm run test:package && npm run test:stateless-runner && npm run test:cdp-runner",
+    "test": "vitest run src",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:package && npm run test:stateless-runner && npm run test:cdp-runner && npm run test:pi",
     "prepack": "npm run check",
     "test:package": "node scripts/check-package-import.mjs",
     "test:stateless-runner": "node scripts/check-stateless-runner.mjs",
     "dev:stage": "npm run build && node scripts/prepare-local-install.mjs",
-    "test:cdp-runner": "node scripts/check-cdp-runner.mjs"
+    "test:cdp-runner": "node scripts/check-cdp-runner.mjs",
+    "test:pi": "node --test pi/*.test.mjs"
   },
   "engines": {
     "node": ">=22.19 <25"
   },
   "dependencies": {
     "playwright-core": "1.63.0",
-    "zod": "4.6.7"
+    "zod": "4.6.7",
+    "typebox": "1.3.7"
   },
   "devDependencies": {
     "@tibame201020/queqiao": "0.9.13",
