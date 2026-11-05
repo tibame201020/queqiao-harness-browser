@@ -45,6 +45,7 @@ OpenCode reference: https://opencode.ai/docs/providers (custom OpenAI-compatible
 2. [OPENAPI.yaml](OPENAPI.yaml) — **proposed** model wire interface and errors.
 3. [ADR-0001.md](ADR-0001.md) — why model API replaces public operation API.
 4. [TICKETS.md](TICKETS.md) — BSV2-001..011, dependency graph and RED→GREEN/real-E2E gates.
+5. [FEASIBILITY.md](FEASIBILITY.md) — 2026-11-05 real Pi + Browser Harness partial experiment; native Pi tool execution PASS, full tool-result continuation BLOCKED.
 5. [REVIEW-GATES.md](REVIEW-GATES.md) — strict completion evidence.
 6. [GLOSSARY.md](GLOSSARY.md) — model protocol vs Browser private state.
 7. [ORCHESTRATION.md](ORCHESTRATION.md) — optional engineering execution handoff only.

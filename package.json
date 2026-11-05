@@ -22,12 +22,13 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test && npm run build && npm run test:package && npm run test:stateless-runner && npm run test:cdp-runner",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:package && npm run test:stateless-runner && npm run test:cdp-runner && npm run test:bsv2-feasibility",
     "prepack": "npm run check",
     "test:package": "node scripts/check-package-import.mjs",
     "test:stateless-runner": "node scripts/check-stateless-runner.mjs",
     "dev:stage": "npm run build && node scripts/prepare-local-install.mjs",
-    "test:cdp-runner": "node scripts/check-cdp-runner.mjs"
+    "test:cdp-runner": "node scripts/check-cdp-runner.mjs",
+    "test:bsv2-feasibility": "node --test test/provider-compatibility/bsv2-gateway.node-test.mjs"
   },
   "engines": {
     "node": ">=22.19 <25"

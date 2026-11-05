@@ -6,7 +6,7 @@ Status: **specified, not executed**. 2026-11-05.
 
 - SPEC, ADR, OpenAPI, Tickets and README all describe **model-provider substitution**, not Agent Tool, AgentHarness or public `/v1/operations`.
 - `GET /v1/models`, `POST /v1/chat/completions`, JSON/SSE/standard error envelope are consistent.
-- BSV2-001 checks **actual Browser producer** plus a real model client: validated tool call, native tool execution, `role: tool` follow-up, history, `finish_reason`, stream/cancellation behavior.
+- BSV2-001 checks **actual Browser producer** plus a real model client: validated tool call, native tool execution, `role: tool` follow-up, history, `finish_reason`, stream/cancellation behavior. The 2026-11-05 partial experiment is recorded in [FEASIBILITY.md](FEASIBILITY.md); **initial Pi tool use is not a full multi-turn PASS**.
 - Failure to prove backend-native model semantics is **BLOCKED**. A text-only response, fake tool-call fixture, or curl 200 cannot pass.
 - No private real profiles, conversation URLs/IDs, prompts, tokens, screenshots or answer text in repository/CI.
 - Start from freshly fetched `origin/main`; preserve unrelated local main and existing worktrees.
