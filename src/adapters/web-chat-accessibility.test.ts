@@ -18,7 +18,7 @@ function fixture(site:WebChatSite, options:{duplicate?:boolean; editable?:boolea
     count:vi.fn(async()=>options.duplicate?2:1),
     first(){return this;},isVisible:vi.fn(async()=>true),
     evaluate:vi.fn(async()=>options.editable??true),
-    locator:vi.fn(()=>form),and:vi.fn(function(this: unknown){return this;}),waitFor:vi.fn(async()=>{}),fill,
+    locator:vi.fn(()=>form),and:vi.fn(function(this: unknown){return this;}),or:vi.fn(function(this: unknown){return this;}),waitFor:vi.fn(async()=>{}),fill,
   };
   const absentRole={count:vi.fn(async()=>0)};
   const cssEditor={count:vi.fn(async()=>0),first(){return {isVisible:vi.fn(async()=>false)}}};

@@ -39,6 +39,17 @@ try {
   assert.equal(rejected,true,"A recovered editor must stay strict after a second candidate appears");
   assert.equal(await page.locator("#original [role=textbox]").innerText(),"ORIGINAL_DRAFT");
   assert.equal(await page.locator("#injected [role=textbox]").innerText(),"OTHER_DRAFT");
+  // Independent review P2: another allowed AX role appearing in the same form
+  // after resolution must make the saved locator ambiguous, not silently editable.
+  await page.setContent(`<form id="multi"><div role="combobox" contenteditable="true">PRIMARY</div><button data-testid="chat-submit" type="submit">Send</button></form>`);
+  const bothRoles=await resolveSemanticEditor(page,{css:"#missing",roles:["combobox","textbox"],sendWithinForm:'button[data-testid="chat-submit"][type="submit"]'});
+  assert.equal(bothRoles.source,"aria");
+  await page.locator("#multi").evaluate(node=>node.insertAdjacentHTML("afterbegin",'<div role="textbox" contenteditable="true">SECONDARY</div>'));
+  let crossRoleRejected=false;
+  try {await bothRoles.editor.fill("SHOULD_NOT_SEND",{timeout:500});}catch{crossRoleRejected=true;}
+  assert(crossRoleRejected,"Second allowed role must invalidate previously resolved editor");
+  assert.equal(await page.getByRole("combobox").innerText(),"PRIMARY");
+  assert.equal(await page.getByRole("textbox").innerText(),"SECONDARY");
   // Independent review P1: a sole replacement textbox outside the owned Send form
   // must never receive the original prompt between resolution and fill.
   await page.setContent(`<main><form id="trusted"><div role="textbox" contenteditable="true" aria-label="Composer"></div><button data-testid="send-button">Send</button></form></main>`);
@@ -59,5 +70,5 @@ try {
   assert.equal(rejectedAsPreSend.composer,null);
   assert.equal(observedAfterSend.source,"aria");
   assert.equal(await observedAfterSend.composer.innerText(),"");
-  console.log(JSON.stringify({status:"PASS",cases:out,lateDuplicateEditor:{rejected,originalDraftPreserved:true,otherDraftPreserved:true},replacementSearch:{rejected:replacementRejected,searchDraftPreserved:true},postclickStop:{presendRejected:true,postclickObserved:true}}));
+  console.log(JSON.stringify({status:"PASS",cases:out,lateDuplicateEditor:{rejected,originalDraftPreserved:true,otherDraftPreserved:true},crossRoleAddition:{rejected:crossRoleRejected,existingDraftPreserved:true,newDraftPreserved:true},replacementSearch:{rejected:replacementRejected,searchDraftPreserved:true},postclickStop:{presendRejected:true,postclickObserved:true}}));
 } finally {await browser.close();}

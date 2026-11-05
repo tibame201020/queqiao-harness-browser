@@ -26,9 +26,13 @@ export async function resolveSemanticEditor(page: Page, contract: SemanticEditor
 
   if (typeof page.getByRole !== "function") return none();
   let candidate: Locator | null = null;
+  let allAllowedRoles: Locator | null = null;
   for (const role of contract.roles) {
     const list = page.getByRole(role);
     if (typeof list?.count !== "function") return none();
+    // Retain the live union of every permitted role; a second role may appear
+    // between initial resolution and fill(). Strict mode must catch that race.
+    allAllowedRoles = allAllowedRoles ? allAllowedRoles.or(list) : list;
     const found = await list.count().catch(() => -1);
     if (found < 0 || found > 1 || (found === 1 && candidate)) return none();
     // Keep the strict live Locator; .first() would silently retarget after a DOM remount.
@@ -47,8 +51,8 @@ export async function resolveSemanticEditor(page: Page, contract: SemanticEditor
   const qualifiedCss = contract.observationOnly
     ? `form ${editable}`
     : `form:has(${contract.sendWithinForm}) ${editable}`;
-  if (typeof candidate.and !== "function") return none();
-  const owned = candidate.and(page.locator(qualifiedCss));
+  if (!allAllowedRoles || typeof allAllowedRoles.and !== "function") return none();
+  const owned = allAllowedRoles.and(page.locator(qualifiedCss));
   if (await owned.count().catch(() => -1) !== 1) return none();
   return {matches:1,editor:owned,source:"aria"};
 }

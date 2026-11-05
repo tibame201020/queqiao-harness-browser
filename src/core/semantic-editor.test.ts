@@ -7,7 +7,8 @@ function fixture(options: { css?: number; role?: number; edit?: boolean; form?: 
   const editor = { count: vi.fn(async () => options.role ?? 1), first: vi.fn(function(this: unknown) {return this;}),
     isVisible: vi.fn(async () => options.visible ?? true),
     evaluate: vi.fn(async () => options.edit ?? true), locator: vi.fn(() => form),
-    and: vi.fn(function(this: unknown) {return this;}) };
+    and: vi.fn(function(this: unknown) {return this;}),
+    or: vi.fn(function(this: unknown) {return this;}) };
   const css = { count: vi.fn(async () => options.css ?? 0), first() {return this;} };
   const page = { locator: vi.fn(() => css), getByRole: vi.fn((role:string) => role === "textbox" ? editor : {...editor,count:vi.fn(async () => 0)}) };
   return {page,css,editor,form,send};
@@ -25,6 +26,7 @@ describe("shared Browser Accessibility resolution",()=>{
     expect(f.page.getByRole).toHaveBeenCalledWith("textbox");
     expect(f.editor.first).not.toHaveBeenCalled();
     expect(f.editor.and).toHaveBeenCalledTimes(1);
+    expect(f.editor.or).toHaveBeenCalledTimes(1);
   });
   it.each([
     [{css:2},"ambiguous"],[{role:0},"none"],[{role:2},"none"],
