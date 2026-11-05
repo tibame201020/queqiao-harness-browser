@@ -129,6 +129,10 @@ async function trigger(site:WebChatSite,page:Page,cfg:WebChatConfig,args:Record<
   const send=resolved.source==="aria" && site.semanticEditor
     ? composer.locator("xpath=ancestor::form[1]").locator(site.semanticEditor.sendWithinForm)
     : page.locator(site.send).first();
+  // UI may remount after fill: verify the resolved form still owns one Send.
+  // Fail before the click boundary; never reinterpret an ambiguous post-click outcome.
+  if(resolved.source==="aria" && await send.count().catch(()=>-1)!==1)
+    return {status:"unavailable",provider:site.id,reason:"SEND_CONTROL_MISSING",retryable:true};
   try { await send.waitFor({state:"visible",timeout:10000}); }
   catch { return {status:"unavailable",provider:site.id,reason:"SEND_CONTROL_MISSING",retryable:true}; }
   // From this point a failed Playwright acknowledgement cannot prove whether submission happened.

@@ -5,14 +5,15 @@ import type {WebChatSite} from "./web-chat.js";
 
 afterEach(()=>vi.restoreAllMocks());
 
-function fixture(site:WebChatSite, options:{duplicate?:boolean; editable?:boolean; sendCount?:number}={}) {
+function fixture(site:WebChatSite, options:{duplicate?:boolean; editable?:boolean; sendCount?:number; sendCountAfterFill?:number}={}) {
   let now=0;
   let url=site.newChatUrl;
   vi.spyOn(Date,"now").mockImplementation(()=>now);
   const sendClick=vi.fn(async()=>{url=site.origin+"/"+site.conversationPaths[0]+"/fixture1234";});
-  const send={count:vi.fn(async()=>options.sendCount??1),waitFor:vi.fn(async()=>{}),click:sendClick};
+  let filled=false;
+  const send={count:vi.fn(async()=>filled && options.sendCountAfterFill!==undefined ? options.sendCountAfterFill : (options.sendCount??1)),waitFor:vi.fn(async()=>{}),click:sendClick};
   const form={count:vi.fn(async()=>1),locator:vi.fn(()=>send)};
-  const fill=vi.fn(async()=>{});
+  const fill=vi.fn(async()=>{filled=true;});
   const editor={
     count:vi.fn(async()=>options.duplicate?2:1),
     first(){return this;},isVisible:vi.fn(async()=>true),
@@ -42,6 +43,13 @@ describe.each([
     expect(f.fill).toHaveBeenCalledExactlyOnceWith("TEST_FIXTURE");
     expect(f.sendClick).toHaveBeenCalledTimes(1);
     expect(f.form.locator).toHaveBeenCalledWith(site.semanticEditor?.sendWithinForm);
+  });
+  it("fails closed if the form gains a second Send after the editor was filled",async()=>{
+    const f=fixture(site,{sendCountAfterFill:2});
+    const r=await adapter.execute("trigger",{prompt:"TEST_FIXTURE"},{browser:{page:f.page as never},config:{adapterConfig:{}}});
+    expect(r).toMatchObject({status:"unavailable",reason:"SEND_CONTROL_MISSING"});
+    expect(f.fill).toHaveBeenCalledTimes(1);
+    expect(f.sendClick).not.toHaveBeenCalled();
   });
   it.each([
     ["ambiguous editor",{duplicate:true}],

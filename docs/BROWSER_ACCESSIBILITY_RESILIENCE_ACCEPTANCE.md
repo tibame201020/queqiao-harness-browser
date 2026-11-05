@@ -18,7 +18,7 @@ The shared API is integrated by:
 - Mistral: native `textbox` role, provider-owned form `Send`.
 - Claude: **CSS-only** until authenticated UI evidence confirms the form/Send relationship; do not infer a generic contract.
 
-WebChat fallback uses the validated **form-owned** Send locator instead of a global first-match Send locator. The existing provider-specific login gate, site challenge, target URL checks and postclick ambiguity behavior still own decisions.
+WebChat fallback uses the validated **form-owned** Send locator instead of a global first-match Send locator. A second pre-click count check after the editor has been filled rejects a newly duplicated or missing Send control as `SEND_CONTROL_MISSING` before dispatch. This reduces a real DOM-remount ambiguity without modifying the post-click no-resend boundary. The existing provider-specific login gate, site challenge, target URL checks and postclick ambiguity behavior still own decisions.
 
 ## Reproducible tests
 
