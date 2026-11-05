@@ -28,5 +28,15 @@ try {
     assert.equal(duplicate.editor,null);
     out.push({case:item.name,selectorDriftRecovered:true,noneditableRejected:true,duplicateSendRejected:true});
   }
-  console.log(JSON.stringify({status:"PASS",cases:out}));
+  // Independent review P1: a new earlier matching textbox must not steal focus.
+  await page.setContent(`<main><form id="original"><div role="textbox" contenteditable="true">ORIGINAL_DRAFT</div><button type="submit">Send</button></form></main>`);
+  const strict=await resolveSemanticEditor(page,{css:"#nonexistent",roles:["textbox"],sendWithinForm:"button[type=submit]"});
+  assert.equal(strict.source,"aria");
+  await page.evaluate(()=>document.body.insertAdjacentHTML("afterbegin",`<form id="injected"><div role="textbox" contenteditable="true">OTHER_DRAFT</div><button type="submit">Send</button></form>`));
+  let rejected=false;
+  try {await strict.editor.fill("SHOULD_NOT_SEND",{timeout:500});} catch {rejected=true;}
+  assert.equal(rejected,true,"A recovered editor must stay strict after a second candidate appears");
+  assert.equal(await page.locator("#original [role=textbox]").innerText(),"ORIGINAL_DRAFT");
+  assert.equal(await page.locator("#injected [role=textbox]").innerText(),"OTHER_DRAFT");
+  console.log(JSON.stringify({status:"PASS",cases:out,lateDuplicateEditor:{rejected,originalDraftPreserved:true,otherDraftPreserved:true}}));
 } finally {await browser.close();}

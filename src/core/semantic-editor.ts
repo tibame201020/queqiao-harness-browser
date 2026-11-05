@@ -29,7 +29,8 @@ export async function resolveSemanticEditor(page: Page, contract: SemanticEditor
     if (typeof list?.count !== "function") return none();
     const found = await list.count().catch(() => -1);
     if (found < 0 || found > 1 || (found === 1 && candidate)) return none();
-    if (found === 1) candidate = list.first();
+    // Keep the strict live Locator; .first() would silently retarget after a DOM remount.
+    if (found === 1) candidate = list;
   }
   if (!candidate || !(await candidate.isVisible().catch(() => false))) return none();
   // AX says what it is; the live DOM decides whether insertion is permitted.
