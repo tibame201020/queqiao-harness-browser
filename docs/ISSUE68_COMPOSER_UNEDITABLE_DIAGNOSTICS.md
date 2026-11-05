@@ -6,7 +6,7 @@ Installed v0.5.16 original ChatGPT tab returned PRE_SEND_NOT_READY with composer
 
 ## Minimal implementation
 
-When the precompose deadline expires and exactly one visible Composer is not editable, report precomposeReason=composer_uneditable. Save one original-tab viewport screenshot in the existing local private diagnostics area, as already done for composer_absent. Return only the screenshot status and opaque filename, never private image bytes or account content. All failures remain not_sent and do not trigger text insertion or Send.
+When the precompose deadline expires and exactly one visible Composer is not editable, report precomposeReason=composer_uneditable. This applies both during initial readiness polling and after a failed editor-content read that is followed by a noneditable Composer. The second path was a separately reproduced RED test: it previously returned editor_read_failed despite the terminal DOM state. Save one original-tab viewport screenshot in the existing local private diagnostics area, as already done for composer_absent. Return only the screenshot status and opaque filename, never private image bytes or account content. All failures remain not_sent and do not trigger text insertion or Send.
 
 ## Tests and acceptance
 
@@ -19,6 +19,12 @@ When the precompose deadline expires and exactly one visible Composer is not edi
 
 No evidence yet proves whether the failing real ChatGPT page had hydration failure, editor remount, or locator drift. Original-page local image inspection and live browser evidence are needed before adopting an Accessibility Tree / semantic resolver design. No screenshots or user data belong in this repository.
 
+## Verification evidence
+
+The additional draft-read-to-uneditable regression reproduced RED on the original branch (terminal diagnostic incorrectly editor_read_failed), then GREEN after the targeted classification change. The screenshot unit test now also verifies that composer-uneditable PNG bytes remain in the local private directory. Windows verification: 339/339 tests, TypeScript typecheck, build, package import, stateless runner and offline CDP checks passed.
+
+The real authenticated CDP profile and same-Conversation two-turn E2E on the preceding commit validated the normal Send/Collect path, but did not reproduce a noneditable Composer. A new branch commit requires fresh CI and explicit readback before release. No historical UNKNOWN send should be replayed to force a reproduction.
+
 ## Merge gate
 
-Do not merge on test results alone. Full CI and authentic installed-browser E2E must be accepted.
+Do not merge on test results alone. Full CI, genuine authenticated Browser E2E and independent review must be accepted. The original site-side missing Composer root cause remains UNKNOWN; a captured screenshot or a blank-looking viewport does not establish a specific hydration or selector defect.

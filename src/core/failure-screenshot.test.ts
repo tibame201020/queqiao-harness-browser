@@ -46,6 +46,11 @@ describe("Issue #68 original-tab screenshot at terminal Composer absence", () =>
     expect(f.page.screenshot).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ status: "unavailable", submissionState: "not_sent",
       diagnostic: { precomposeReason: "composer_uneditable", failureScreenshot: { status: "saved" } } });
+    const file = result.diagnostic.failureScreenshot.file;
+    expect(file).toMatch(/^composer-uneditable-[0-9a-f-]{36}[.]png$/);
+    if (!file) throw new Error("Expected private screenshot");
+    const savedPath = path.join(profilePaths(f.home, f.profileName).root, "private-diagnostics", file);
+    expect(await fs.readFile(savedPath)).toEqual(Buffer.from("safe-synthetic-viewport"));
   });
 
   it("never captures a successful Send or any post-click unknown", async () => {

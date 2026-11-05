@@ -806,7 +806,9 @@ export async function sendChatGptPrompt(page: Page, prompt: string, expectedId?:
       }
       if (Date.now() - started >= 15_000) {
         throw await precomposeFailure(current.state,
-          current.state.composerMatches === 0 ? "composer_absent" : "editor_read_failed");
+          current.state.composerMatches === 0 ? "composer_absent"
+            : current.state.composerMatches === 1 && current.state.composerVisible && !current.state.composerEditable
+              ? "composer_uneditable" : "editor_read_failed");
       }
       await page.waitForTimeout(200);
       current = await inspect(page, "precompose", started, initialId, targetId);
