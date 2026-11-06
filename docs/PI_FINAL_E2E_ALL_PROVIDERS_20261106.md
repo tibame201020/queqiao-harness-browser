@@ -31,3 +31,7 @@ For every final observed case, the durable Request Journal held `COMPLETED`, exa
 - Further quality work: independent code review of completion, journal reconciliation and Pi event-hook boundaries; longer soak/resource testing if long-running stability is a release requirement; monitor provider UI drift. A future UI change must fail closed and be reconfirmed with a fresh DOM POC.
 
 **Observed four-provider Final E2E acceptance is complete; release readiness is a separate decision.**
+
+## Subsequent code review
+
+After four-provider E2E acceptance, a separate [code-review and release-readiness pass](PI_FOUR_PROVIDER_CODE_REVIEW_RELEASE_READINESS_20261106.md) found and fixed two concurrent-Collect journal-state races with TDD. The original per-provider E2E evidence remains unchanged; the final commit must pass its own current-commit CI. Release/merge remains HOLD pending parent and independent review.

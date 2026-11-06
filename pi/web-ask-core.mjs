@@ -45,13 +45,23 @@ export function createWebAskTool({provider='chatgpt',profile,stateDir,transport,
     if(record.status==='UNKNOWN'&&['CLICK_OUTCOME_UNKNOWN','POST_CLICK_UNVERIFIED'].includes(record.reason)&&
       typeof transport.recover==='function'){
       try{
-        const observed=await withLock(()=>transport.recover({promptHash:record.prompt_hash},signal),signal);
-        if(observed?.status==='submitted'&&CONVERSATION.test(observed.conversationId||'')&&
-           validUrl(observed.conversationUrl,observed.conversationId)){
-          record={...record,status:'SUBMITTED',reason:undefined,conversation_id:observed.conversationId,
-            conversation_url:observed.conversationUrl};
-          await write(request_id,record);
-        }
+        record=await withLock(async()=>{
+          // Recover only if the original ambiguity still exists after lock.
+          // Another collector might have already settled this same receipt.
+          const current=await read(request_id);
+          if(!current)return record;
+          if(current.status!=='UNKNOWN'||!['CLICK_OUTCOME_UNKNOWN','POST_CLICK_UNVERIFIED'].includes(current.reason))
+            return current;
+          const observed=await transport.recover({promptHash:current.prompt_hash},signal);
+          if(observed?.status==='submitted'&&CONVERSATION.test(observed.conversationId||'')&&
+             validUrl(observed.conversationUrl,observed.conversationId)){
+            const recovered={...current,status:'SUBMITTED',reason:undefined,conversation_id:observed.conversationId,
+              conversation_url:observed.conversationUrl};
+            await write(request_id,recovered);
+            return recovered;
+          }
+          return current;
+        },signal);
       }catch{/* Ambiguous click remains UNKNOWN, with no resend. */}
     }
     // Older code used 650ms text stability as proof. Legacy COMPLETED
@@ -63,6 +73,19 @@ export function createWebAskTool({provider='chatgpt',profile,stateDir,transport,
     if(!CONVERSATION.test(record.conversation_id||'')||!validUrl(record.conversation_url,record.conversation_id))return {status:'UNKNOWN',request_id};
     return withLock(async()=>{
       try{
+        // The pre-lock receipt can be stale. Another collector may have
+        // just persisted a VERIFIED COMPLETED result while we waited here.
+        // Re-read under the same browser lock before any provider call or
+        // journal write: terminal completion must be monotonic.
+        const current=await read(request_id);
+        if(!current)return {status:'NOT_FOUND',request_id};
+        if(current.status==='COMPLETED'&&hasProof(current))return simple(current);
+        if(current.status==='COMPLETED'&&!hasProof(current))
+          record={...current,status:'SUBMITTED',answer:undefined,reason:undefined};
+        else if(['SUBMITTED','PENDING'].includes(current.status))record=current;
+        else return simple(current);
+        if(!CONVERSATION.test(record.conversation_id||'')||!validUrl(record.conversation_url,record.conversation_id))
+          return {status:'UNKNOWN',request_id};
         const v=await transport.collect({conversationId:record.conversation_id,conversationUrl:record.conversation_url,promptHash:record.prompt_hash},signal);
         if(v?.status==='completed'&&v.completionEvidence===COMPLETION_PROOF&&v.conversationId===record.conversation_id&&
           validUrl(v.conversationUrl,record.conversation_id)&&typeof v.text==='string'&&v.text.trim()){

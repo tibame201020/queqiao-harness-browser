@@ -12,7 +12,7 @@ const url='https://chatgpt.com/c/'+id;
 const submitted={status:'submitted',conversationId:id,conversationUrl:url};
 const completed={status:'completed',conversationId:id,conversationUrl:url,text:'Synthetic acknowledgment',completionEvidence:'latest-assistant-terminal-action-v1'};
 const sha=t=>createHash('sha256').update(t).digest('hex');
-async function setup({ready=true,trigger=async()=>submitted,collect=async()=>completed,recover}={}){
+async function setup({ready=true,trigger=async()=>submitted,collect=async()=>completed,recover,withLock}={}){
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'pi-orca-core-test-'));
  const calls=[];
  const transport={
@@ -21,7 +21,7 @@ async function setup({ready=true,trigger=async()=>submitted,collect=async()=>com
   collect:async args=>{calls.push({method:'collect',args});return collect(args)},
   ...(recover?{recover:async args=>{calls.push({method:'recover',args});return recover(args)}}:{})
  };
- const tool=createChatGptTool({profile,stateDir:dir,transport});
+ const tool=createChatGptTool({profile,stateDir:dir,transport,...(withLock?{withLock}:{})});
  return {tool,calls,dir,cleanup:()=>fs.rm(dir,{recursive:true,force:true})};
 }
 const count=(calls,method)=>calls.filter(x=>x.method===method).length;
@@ -159,4 +159,92 @@ test('legacy COMPLETED receipt without a completion proof is not trusted; read-o
   const saved=JSON.parse(await fs.readFile(filename,'utf8'));assert.equal(saved.completion_evidence,'latest-assistant-terminal-action-v1');
   assert.equal(count(x.calls,'trigger'),0);assert.equal(count(x.calls,'collect'),1);
  }finally{await x.cleanup()}
+});
+
+test('concurrent read-only collectors must not downgrade a journal COMPLETED result to PENDING',async()=>{
+ let last=Promise.resolve(),acquired=0;
+ let secondCollectStarted,releaseSecond;
+ const started=new Promise(resolve=>secondCollectStarted=resolve);
+ const hold=new Promise(resolve=>releaseSecond=resolve);
+ const withLock=fn=>{
+  acquired++;
+  const running=last.then(fn);
+  last=running.then(()=>{},()=>{});
+  return running;
+ };
+ let calls=0;
+ const x=await setup({withLock,collect:async()=>{
+  calls++;
+  if(calls===1)return {status:'pending'}; // first collect from ask()
+  if(calls===2){secondCollectStarted();await hold;return completed;}
+  return {status:'pending'}; // stale follow-up must not overwrite completed
+ }});
+ try{
+  const receipt='concurrent-collect-01';
+  assert.equal((await x.tool.ask({question:'Synthetic overlapping collect',request_id:receipt})).status,'PENDING');
+  const first=x.tool.collect({request_id:receipt});
+  await started;
+  const second=x.tool.collect({request_id:receipt});
+  // Ensure second entered `withLock` before permitting first to complete.
+  for(let i=0;i<100&&acquired<4;i++)await new Promise(r=>setTimeout(r,1));
+  assert.equal(acquired,4,'both collectors queued at the same per-provider browser lock');
+  releaseSecond();
+  assert.equal((await first).status,'COMPLETED');
+  assert.equal((await second).status,'COMPLETED','a later stale pending observation must not downgrade final');
+  assert.equal((await x.tool.status({request_id:receipt})).status,'COMPLETED');
+  assert.equal(calls,2,'after completion, do not invoke a second browser collect');
+ }finally{releaseSecond?.();await x.cleanup()}
+});
+
+test('a concurrent read-only UNKNOWN observation cannot overwrite a verified COMPLETED receipt',async()=>{
+ let last=Promise.resolve(),locked=0,resolveStarted,resolveHeld;
+ const started=new Promise(r=>resolveStarted=r),held=new Promise(r=>resolveHeld=r);
+ const withLock=fn=>{locked++;const active=last.then(fn);last=active.then(()=>{},()=>{});return active};
+ let calls=0;
+ const x=await setup({withLock,collect:async()=>{
+  calls++;
+  if(calls===1)return {status:'pending'};
+  if(calls===2){resolveStarted();await held;return completed;}
+  return {status:'unknown',reason:'TEMPORARY_UI_MISMATCH'};
+ }});
+ try{
+  const receipt='concurrent-collect-02';
+  assert.equal((await x.tool.ask({question:'Synthetic final monotonic',request_id:receipt})).status,'PENDING');
+  const first=x.tool.collect({request_id:receipt});await started;
+  const second=x.tool.collect({request_id:receipt});
+  for(let i=0;i<100&&locked<4;i++)await new Promise(r=>setTimeout(r,1));
+  assert.equal(locked,4);resolveHeld();
+  assert.equal((await first).status,'COMPLETED');
+  assert.equal((await second).status,'COMPLETED');
+  assert.equal((await x.tool.status({request_id:receipt})).status,'COMPLETED');
+  assert.equal(calls,2);
+ }finally{resolveHeld?.();await x.cleanup()}
+});
+
+test('two concurrent collectors of one UNKNOWN must not independently reconcile and overwrite the same receipt',async()=>{
+ let tail=Promise.resolve(),lockEntries=0,recoverCalls=0,unblock,signalStarted;
+ const recoverStarted=new Promise(r=>signalStarted=r),held=new Promise(r=>unblock=r);
+ const withLock=fn=>{
+  lockEntries++;
+  const active=tail.then(fn);tail=active.then(()=>{},()=>{});return active;
+ };
+ const x=await setup({withLock,
+  trigger:async()=>({status:'unknown',reason:'POST_CLICK_UNVERIFIED'}),
+  recover:async()=>{recoverCalls++;if(recoverCalls===1){signalStarted();await held}return submitted},
+  collect:async()=>completed
+ });
+ try{
+  const id='concurrent-recovery-01';
+  assert.equal((await x.tool.ask({question:'Synthetic recovered original',request_id:id})).status,'UNKNOWN');
+  const first=x.tool.collect({request_id:id});await recoverStarted;
+  const second=x.tool.collect({request_id:id});
+  for(let i=0;i<100&&lockEntries<3;i++)await new Promise(r=>setTimeout(r,1));
+  assert.equal(lockEntries,3,'both collectors queued before first recovery finished');
+  unblock();
+  assert.equal((await first).status,'COMPLETED');
+  assert.equal((await second).status,'COMPLETED');
+  assert.equal(recoverCalls,1,'second collector re-reads the recovered state inside the lock');
+  assert.equal((await x.tool.status({request_id:id})).status,'COMPLETED');
+  assert.equal(count(x.calls,'trigger'),1,'no original question is resent');
+ }finally{unblock?.();await x.cleanup()}
 });
