@@ -4,14 +4,20 @@ import {createHash} from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {WEB_PROVIDERS,validateConversation,conversationIdFromUrl} from './web-providers.mjs';
+import {COMPLETION_PROOF} from './completion-evidence.mjs';
 
 const ID=/^[A-Za-z0-9._-]{8,96}$/;
 const CONVERSATION=/^[A-Za-z0-9_-]{8,120}$/;
 const hash=text=>createHash('sha256').update(text).digest('hex');
-const simple=r=>({status:r.status==='DISPATCHING'?'UNKNOWN':r.status,request_id:r.request_id,...(r.reason?{reason:r.reason}:{}),
- ...(r.conversation_id?{conversation_id:r.conversation_id}:{}),
- ...(r.conversation_url?{conversation_url:r.conversation_url}:{}),
- ...(r.status==='COMPLETED'?{answer:r.answer}: {})});
+const hasProof=r=>r?.completion_evidence===COMPLETION_PROOF;
+const simple=r=>{
+ const legacy=r.status==='COMPLETED'&&!hasProof(r);
+ return {status:legacy?'UNKNOWN':r.status==='DISPATCHING'?'UNKNOWN':r.status,request_id:r.request_id,
+  ...(legacy?{reason:'LEGACY_COMPLETION_UNVERIFIED'}:r.reason?{reason:r.reason}:{}),
+  ...(r.conversation_id?{conversation_id:r.conversation_id}:{}),
+  ...(r.conversation_url?{conversation_url:r.conversation_url}:{}),
+  ...(r.status==='COMPLETED'&&!legacy?{answer:r.answer}:{})};
+};
 export function createWebAskTool({provider='chatgpt',profile,stateDir,transport,withLock=async f=>f()}){
   if(!WEB_PROVIDERS[provider])throw Error('UNKNOWN_WEB_PROVIDER');
   const validUrl=(url,id)=>validateConversation(provider,url,id);
@@ -48,14 +54,19 @@ export function createWebAskTool({provider='chatgpt',profile,stateDir,transport,
         }
       }catch{/* Ambiguous click remains UNKNOWN, with no resend. */}
     }
+    // Older code used 650ms text stability as proof. Legacy COMPLETED
+    // receipts are not trusted until rechecked against the current Web UI.
+    // This is read-only: never resend the original question.
+    if(record.status==='COMPLETED'&&!hasProof(record))
+      record={...record,status:'SUBMITTED',answer:undefined,reason:undefined};
     if(!['SUBMITTED','PENDING'].includes(record.status))return simple(record);
     if(!CONVERSATION.test(record.conversation_id||'')||!validUrl(record.conversation_url,record.conversation_id))return {status:'UNKNOWN',request_id};
     return withLock(async()=>{
       try{
         const v=await transport.collect({conversationId:record.conversation_id,conversationUrl:record.conversation_url,promptHash:record.prompt_hash},signal);
-        if(v?.status==='completed'&&v.conversationId===record.conversation_id&&
+        if(v?.status==='completed'&&v.completionEvidence===COMPLETION_PROOF&&v.conversationId===record.conversation_id&&
           validUrl(v.conversationUrl,record.conversation_id)&&typeof v.text==='string'&&v.text.trim()){
-          const done={...record,status:'COMPLETED',reason:undefined,conversation_url:v.conversationUrl,answer:v.text};await write(request_id,done);return simple(done);
+          const done={...record,status:'COMPLETED',reason:undefined,conversation_url:v.conversationUrl,answer:v.text,completion_evidence:COMPLETION_PROOF};await write(request_id,done);return simple(done);
         }
         if(v?.status==='unknown'){
           const unknown={...record,status:'UNKNOWN',reason:v.reason||'COLLECT_IDENTITY_UNKNOWN'};

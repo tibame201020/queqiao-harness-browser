@@ -1,3 +1,4 @@
+import {completionEvidenceExpression} from './completion-evidence.mjs';
 // Pure, site-specific rules. No browser lifecycle or authentication ownership.
 // All page scripts generated here inspect DOM only; no JS-driven send or click.
 const UUID='[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -66,7 +67,8 @@ export const WEB_READONLY_INSPECT_JS=Object.fromEntries(Object.entries(siteDom).
   ${JSON.stringify(provider)}==='grok'?(answerRoot?.querySelector('.response-content-markdown')??null):answerRoot);
  return {url:location.origin+location.pathname,editorCount:editors.length,editorText:editor?(editor.innerText||editor.value||'').trim():null,
   lastUserText:latestUser,userCount:userNodes.length,assistantText:latestAssistant,
-  generationActive:!!document.querySelector(${JSON.stringify(dom.stop)})};
+  generationActive:!!document.querySelector(${JSON.stringify(dom.stop)}),
+  generationComplete:${completionEvidenceExpression(provider)}};
 })()`;
  return [provider,js];
 }));

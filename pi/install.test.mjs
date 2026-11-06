@@ -10,7 +10,7 @@ test('user-local install produces exactly one auto-discovered Pi entrypoint and 
  try{
   const x=spawnSync(process.execPath,['pi/install.mjs','--dest',dir,'--skip-deps'],{cwd:process.cwd(),encoding:'utf8'});
   assert.equal(x.status,0,x.stderr);
-  assert.deepEqual(fs.readdirSync(dir).sort(),['chatgpt-core.mjs','commands.mjs','index.ts','orca-cli.mjs','package.json','web-ask-core.mjs','web-providers.mjs']);
+  assert.deepEqual(fs.readdirSync(dir).sort(),['chatgpt-core.mjs','commands.mjs','completion-evidence.mjs','index.ts','orca-cli.mjs','package.json','web-ask-core.mjs','web-providers.mjs']);
   assert.ok(fs.readFileSync(path.join(dir,'index.ts'),'utf8').includes("name:`ask_${provider}`"));
   assert.ok(fs.readFileSync(path.join(dir,'commands.mjs'),'utf8').includes("registerCommand"));
   // Windows fs.chmod has no POSIX 0600 semantics; native user-profile ACLs apply.
@@ -38,6 +38,7 @@ test('npm package includes Orca runtime module and excludes removed Windows Runn
  assert.ok(pkg.files.includes('pi/web-providers.mjs'));
  assert.ok(pkg.files.includes('pi/web-ask-core.mjs'));
  assert.ok(pkg.files.includes('pi/commands.mjs'));
+ assert.ok(pkg.files.includes('pi/completion-evidence.mjs'));
  assert.ok(pkg.files.includes('pi/install-platform.mjs'));
  assert.equal(pkg.files.includes('pi/windows-runner.mjs'),false);
 });

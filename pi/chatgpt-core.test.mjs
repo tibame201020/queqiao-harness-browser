@@ -10,7 +10,7 @@ const profile='synthetic-pi-orca';
 const id='11111111-1111-4111-8111-111111111111';
 const url='https://chatgpt.com/c/'+id;
 const submitted={status:'submitted',conversationId:id,conversationUrl:url};
-const completed={status:'completed',conversationId:id,conversationUrl:url,text:'Synthetic acknowledgment'};
+const completed={status:'completed',conversationId:id,conversationUrl:url,text:'Synthetic acknowledgment',completionEvidence:'latest-assistant-terminal-action-v1'};
 const sha=t=>createHash('sha256').update(t).digest('hex');
 async function setup({ready=true,trigger=async()=>submitted,collect=async()=>completed,recover}={}){
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'pi-orca-core-test-'));
@@ -125,7 +125,7 @@ test('four providers use independent durable receipt namespaces and reject cross
    const t=createWebAskTool({provider,profile:'test-shared-profile',stateDir:dir,transport:{
     readiness:async()=>true,
     trigger:async()=>{counts[provider]++;return {status:'submitted',conversationId:id,conversationUrl:prefix+id}},
-    collect:async()=>({status:'completed',conversationId:id,conversationUrl:prefix+id,text:`${provider}-ack`})
+    collect:async()=>({status:'completed',conversationId:id,conversationUrl:prefix+id,text:`${provider}-ack`,completionEvidence:'latest-assistant-terminal-action-v1'})
    }});
    const a=await t.ask({question:'Same question all providers',request_id:'shared-request-id'});
    assert.equal(a.status,'COMPLETED');assert.equal(a.answer,`${provider}-ack`);
@@ -136,4 +136,27 @@ test('four providers use independent durable receipt namespaces and reject cross
   const claude=createWebAskTool({provider:'claude',profile:'different-profile',stateDir:dir,transport:{readiness:async()=>true,trigger:async()=>({status:'submitted',conversationId:id,conversationUrl:providers.grok+id})}});
   assert.equal((await claude.ask({question:'Cross origin',request_id:'cross-origin-id'})).status,'UNKNOWN');
  }finally{await fs.rm(dir,{recursive:true,force:true})}
+});
+
+test('a transport claiming completed without explicit UI evidence cannot persist a final answer',async()=>{
+ const x=await setup({collect:async()=>({status:'completed',conversationId:id,conversationUrl:url,text:'Incomplete response'})});
+ try{
+  const r=await x.tool.ask({question:'Synthetic slow generation',request_id:'no-ui-evidence-0001'});
+  assert.equal(r.status,'PENDING');assert.equal(r.answer,undefined);
+  assert.equal((await x.tool.status({request_id:'no-ui-evidence-0001'})).status,'PENDING');
+  assert.equal(count(x.calls,'trigger'),1);
+ }finally{await x.cleanup()}
+});
+test('legacy COMPLETED receipt without a completion proof is not trusted; read-only collect revalidates',async()=>{
+ const x=await setup();
+ try{
+  const request_id='legacy-unproved-0001',question='Synthetic incomplete legacy answer';
+  const filename=path.join(x.dir,sha(profile+'\0'+request_id)+'.json');
+  await fs.writeFile(filename,JSON.stringify({status:'COMPLETED',request_id,prompt_hash:sha(question),conversation_id:id,conversation_url:url,answer:'Partial answer'}));
+  const prior=await x.tool.status({request_id});assert.equal(prior.status,'UNKNOWN');assert.equal(prior.answer,undefined);assert.equal(prior.reason,'LEGACY_COMPLETION_UNVERIFIED');
+  const ask=await x.tool.ask({request_id,question});assert.equal(ask.status,'UNKNOWN');assert.equal(count(x.calls,'trigger'),0);
+  const collected=await x.tool.collect({request_id});assert.equal(collected.status,'COMPLETED');assert.equal(collected.answer,'Synthetic acknowledgment');
+  const saved=JSON.parse(await fs.readFile(filename,'utf8'));assert.equal(saved.completion_evidence,'latest-assistant-terminal-action-v1');
+  assert.equal(count(x.calls,'trigger'),0);assert.equal(count(x.calls,'collect'),1);
+ }finally{await x.cleanup()}
 });

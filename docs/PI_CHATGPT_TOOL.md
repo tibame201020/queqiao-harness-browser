@@ -18,22 +18,25 @@ Existing authenticated Orca pi-usage browser tabs (one per provider)
 
 The original `chatgpt-core.mjs` remains a minimal compatibility re-export. The old `createChatGptTool` factory is an alias to the shared `createWebAskTool({provider:'chatgpt'})`; historical ChatGPT local receipts retain their namespace. This extension **does not use Browser Harness**, change browser profiles, or install into n8n's separate 9B Workers, which still launch with `--no-extensions`.
 
-## Interactive Pi Slash Commands (Windows and WSL)
+## Interactive Pi Slash Commands — Agent-aware (Windows and WSL)
 
-The local extension registers **four explicit human commands** in addition to all 16 model-callable tools. Native Pi 0.85.1 and 1.5.0 expose extension commands in the interactive slash-completion list and through RPC `get_commands`:
+The extension registers **four human Slash Commands** in addition to the existing 16 model tools. `/ask-gpt`, `/ask-claude`, `/ask-grok`, and `/ask-mistral` are **Pi Agent Loop entrypoints**, not direct browser passthrough:
 
-| Human command | Existing Core route | Read-only later collection |
-|---|---|---|
-| `/ask-gpt What is unit testing?` | `ask_chatgpt` | `/ask-gpt --collect <request_id>` |
-| `/ask-claude What is unit testing?` | `ask_claude` | `/ask-claude --collect <request_id>` |
-| `/ask-grok What is unit testing?` | `ask_grok` | `/ask-grok --collect <request_id>` |
-| `/ask-mistral What is unit testing?` | `ask_mistral` | `/ask-mistral --collect <request_id>` |
+1. A command passes the user's natural-language request unchanged to Pi through `pi.sendUserMessage()` and notes the preferred provider/tool (`ask_chatgpt`, `ask_claude`, `ask_grok`, `ask_mistral`). This starts the *existing* Pi Agent Loop, not another planner service.
+2. Pi decides if external consultation is needed based on the task and available local context. An explicit request such as “必須先詢問 ChatGPT” must be honored; the command name alone does not force a Web send. Pi should use its built-in project read/search tools to inspect relevant evidence before sending a project-specific question. Do not forward the entire repository, credentials, sensitive data or irrelevant files.
+3. If consultation is performed, the **same** Ask Core, provider-pinned Orca Transport, idempotent Request Journal and read-only Collect tools are used. A pending/unknown response must not trigger another Ask. Pi continues processing the answer rather than merely displaying it.
+4. `/ask-gpt --collect <request_id>` (and the other three provider equivalents) is an explicitly **read-only** direct command for an existing receipt; unlike a new request, it does not start a Pi model turn. It displays the saved result with `triggerTurn:false`.
 
-The command calls `createWebAskTool(...).ask()` directly, **not** another LLM turn and not another Orca implementation. If the result is `PENDING`, it attempts up to eight bounded **read-only** `collect()` calls. `UNKNOWN` is only reconciled for the two explicitly recoverable click outcomes, never blindly resent. If still pending or unknown, the user-visible result includes the original receipt ID and a `--collect` command. `--collect` never calls Ask. Do not repeat a question expecting a new send: the deterministic journal deduplicates the exact same question per provider/platform namespace.
+Examples:
 
-The result is displayed as a Pi custom message with `triggerTurn:false`, avoiding an extra model call. This custom message is stored in the Pi session and may participate in later LLM context; extremely large answers are capped to 12,000 characters for display (the full answer remains in the private receipt journal). Never send secrets or sensitive personal data through this Web Ask extension. Use `/reload` or restart Pi after installing or updating the extension, then type `/ask-` to see the registered completions.
+```text
+/ask-gpt 請先檢查目前專案的測試，再評估是否需要詢問 ChatGPT
+/ask-claude 必須先閱讀相關程式碼，再詢問 Claude，最後整理結論
+/ask-grok 請幫我分析目前的架構風險
+/ask-mistral --collect <EXISTING_REQUEST_ID>
+```
 
-**Verified on actual installed Pi CLIs (2026-11-06):** The Pi RPC `get_commands` response included all four slash commands on both WSL Pi and Windows Pi 1.5.0. A real RPC `prompt` containing `/ask-claude <synthetic question>` on WSL and `/ask-grok <synthetic question>` on Windows each reached the authenticated Web UI, produced `COMPLETED` plus an exact synthetic ACK, and displayed a Pi custom message (`triggerTurn:false`) with exit code 0. Follow-up RPC `/ask-claude --collect <existing receipt>` and `/ask-grok --collect <existing receipt>` also produced the original ACK without another Ask. Direct command execution of `/ask-gpt` and `/ask-mistral` was covered by eight synthetic command-unit tests and runtime registration checks but not an additional external send in this slash-command change; earlier model-tool E2Es cover their Orca transports. No release or merge was performed.
+The command supplies the current Pi working directory only to the *local Pi Agent*. That path is not automatically forwarded externally. This relies on the actual Pi model's ability to choose and summarize context; test with real model-issued read and Ask calls, not only a synthetic ACK. Restart an already-running Pi session or use its supported reload mechanism after installing.
 
 ## Pi tool contracts
 
@@ -47,6 +50,25 @@ The result is displayed as a Pi custom message with `triggerTurn:false`, avoidin
 `ask_*({question,request_id?})` accepts only question plus an optional idempotency key. `collect_*({request_id})` never sends; it reads the original conversation or safely reconciles an ambiguous click. `*_status({request_id})` reads local journal only. `*_readiness({})` checks the configured page without sending. The model **cannot** select a provider's Worktree, Page ID, role, session or account through tool arguments. Cross-provider fallback is outside this scope.
 
 State contract: `COMPLETED`, `PENDING`, `UNKNOWN`, `NOT_SENT`, `NOT_READY`, `NOT_FOUND`, `REQUEST_MISMATCH` and invalid-input errors. An exclusive request ID claim prevents duplicate sends. A process error after claim is `UNKNOWN`, never an automatic retry. Only `CLICK_OUTCOME_UNKNOWN` / `POST_CLICK_UNVERIFIED` may be reconciled by **read-only** matching of the pinned page, verified original prompt hash, canonical conversation identity and settled answer. A deterministic default request ID hashes the provider namespace and exact question. The journal records hashes, receipt IDs, URLs and answer text; it never stores the raw question.
+
+## Completion Evidence contract — live POC, 2026-11-06
+
+Prior behavior accepted “no Stop button and assistant text stable for 650 ms” as `COMPLETED`. This caused a real Windows Pi false-completion report while the ChatGPT Web UI was still answering. Stable text **is not a terminal signal**.
+
+**Read-only Orca DOM + synthetic long-answer POC** (four pinned provider tabs, no user content):
+
+| Provider | Observed while generating | Observed at end | Scoped evidence used |
+|---|---|---|---|
+| ChatGPT | Stop control visible; response text grew to 7,196 characters without final marker | Final marker and assistant's `重新產生回覆` appeared after generation | Latest `ChatGPT 說：` turn's action group, not a global button |
+| Claude | Stop visible; Retry absent throughout streaming | Retry appeared, Stop disappeared, final marker present | Latest `[data-testid=assistant-message]` Retry |
+| Grok | Stop often absent; `複製回應` appeared **before** final marker | `重新生成` appeared with terminal response | Latest assistant response group's Regenerate (not Copy) |
+| Mistral | Stop often absent; Rewrite exists **during** active streaming | Read aloud appeared with final marker | Latest answer part's response group Read aloud (not Rewrite) |
+
+**Conservative contract:** Transport only returns `completed` when the latest assistant's **provider-specific terminal action** is present, no active generation is detected, and two read-only inspections agree on the original user question, answer text and terminal action. It then returns `completionEvidence: latest-assistant-terminal-action-v1`. Core persists `COMPLETED` **only with this proof**. If the toolbar is missing or changes, the request stays `PENDING`; UI changes require a new POC.
+
+Legacy `COMPLETED` journal entries created without evidence are surfaced as `UNKNOWN / LEGACY_COMPLETION_UNVERIFIED`, with no cached answer trusted as final. `collect_*` can **read-only** revalidate a legacy receipt if its pinned original conversation is still available; it must never resend the question. A navigation to a different conversation leaves the old receipt unverified instead of manufacturing completion. Existing worktrees, tabs, private IDs, browser profiles, and secrets remain outside Git.
+
+These site-specific DOM cues are supported by the observed POC, **not a guaranteed future Web UI contract**. Subsequent site changes must fail closed, with test updates based on fresh DOM evidence. Neither a fixed delay alone nor an older message's toolbar is sufficient.
 
 ## Local setup (operator; never commit)
 
@@ -69,7 +91,7 @@ Requires WSL2 + Pi 0.85.1+, installed `orca-ide`, four already authenticated sit
 
 An existing old ChatGPT-only configuration with top-level `worktree`/`pageId` still works for ChatGPT. New providers require their explicit `providers[provider]` entry. `profile` denotes only a **journal namespace**, not an Orca browser profile. Use an absolute `cli` path, since noninteractive Pi/Queqiao jobs may not load a shell PATH. Ensure the lock's parent directory exists. The same lock across providers serializes mutable operations.
 
-Install using `node pi/install.mjs`; it copies `index.ts`, `web-ask-core.mjs`, compatibility `chatgpt-core.mjs`, `orca-cli.mjs`, `web-providers.mjs`, and local TypeBox dependencies to `~/.pi/agent/extensions/queqiao-chatgpt/`. The installer only removes a known-signature legacy Windows Runner module, never an unrelated file. Pi discovers the installed tools on startup. The installation does not create, close or switch Orca tabs.
+Install using `node pi/install.mjs`; it copies `index.ts`, `web-ask-core.mjs`, compatibility `chatgpt-core.mjs`, `orca-cli.mjs`, `web-providers.mjs`, `completion-evidence.mjs`, and local TypeBox dependencies to `~/.pi/agent/extensions/queqiao-chatgpt/`. The installer only removes a known-signature legacy Windows Runner module, never an unrelated file. Pi discovers the installed tools on startup. The installation does not create, close or switch Orca tabs.
 
 ## Browser isolation and data safety
 
