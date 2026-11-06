@@ -1,0 +1,250 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import os from 'node:os';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+import {createChatGptTool} from './chatgpt-core.mjs';
+
+const profile='synthetic-pi-orca';
+const id='11111111-1111-4111-8111-111111111111';
+const url='https://chatgpt.com/c/'+id;
+const submitted={status:'submitted',conversationId:id,conversationUrl:url};
+const completed={status:'completed',conversationId:id,conversationUrl:url,text:'Synthetic acknowledgment',completionEvidence:'latest-assistant-terminal-action-v1'};
+const sha=t=>createHash('sha256').update(t).digest('hex');
+async function setup({ready=true,trigger=async()=>submitted,collect=async()=>completed,recover,withLock}={}){
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'pi-orca-core-test-'));
+ const calls=[];
+ const transport={
+  readiness:async()=>{calls.push({method:'readiness'});return typeof ready==='function'?ready():ready},
+  trigger:async args=>{calls.push({method:'trigger',args});return trigger(args)},
+  collect:async args=>{calls.push({method:'collect',args});return collect(args)},
+  ...(recover?{recover:async args=>{calls.push({method:'recover',args});return recover(args)}}:{})
+ };
+ const tool=createChatGptTool({profile,stateDir:dir,transport,...(withLock?{withLock}:{})});
+ return {tool,calls,dir,cleanup:()=>fs.rm(dir,{recursive:true,force:true})};
+}
+const count=(calls,method)=>calls.filter(x=>x.method===method).length;
+
+test('ask completes with verified original conversation URL, repeat never resends, journal omits prompt',async()=>{
+ const x=await setup();try{
+  const a=await x.tool.ask({question:'Synthetic bounded question',request_id:'test-one-1234'});
+  assert.equal(a.status,'COMPLETED');assert.equal(a.answer,'Synthetic acknowledgment');assert.equal(a.conversation_url,url);
+  assert.equal((await x.tool.ask({question:'Synthetic bounded question',request_id:'test-one-1234'})).status,'COMPLETED');
+  assert.equal(count(x.calls,'trigger'),1);assert.equal(count(x.calls,'collect'),1);
+  const files=await fs.readdir(x.dir);assert.equal(files.length,1);
+  assert.equal((await fs.readFile(path.join(x.dir,files[0]),'utf8')).includes('Synthetic bounded question'),false);
+ }finally{await x.cleanup()}
+});
+test('ambiguous Orca send is durably UNKNOWN and never blindly resent',async()=>{
+ const x=await setup({trigger:async()=>({status:'unknown',reason:'POST_CLICK_UNVERIFIED'})});try{
+  assert.equal((await x.tool.ask({question:'Synthetic ambiguous click',request_id:'test-unknown-1'})).status,'UNKNOWN');
+  assert.equal((await x.tool.ask({question:'Synthetic ambiguous click',request_id:'test-unknown-1'})).status,'UNKNOWN');
+  assert.equal(count(x.calls,'trigger'),1);
+ }finally{await x.cleanup()}
+});
+test('transport failure after exclusive claim stays UNKNOWN, including repeat',async()=>{
+ const x=await setup({trigger:async()=>{throw Error('CLI process interrupted')}});try{
+  assert.equal((await x.tool.ask({question:'Synthetic CLI failure',request_id:'test-error-1234'})).status,'UNKNOWN');
+  assert.equal((await x.tool.ask({question:'Synthetic CLI failure',request_id:'test-error-1234'})).status,'UNKNOWN');
+  assert.equal(count(x.calls,'trigger'),1);
+ }finally{await x.cleanup()}
+});
+test('Orca readiness failure stops before trigger and before creating journal receipt',async()=>{
+ const x=await setup({ready:false});try{
+  assert.equal((await x.tool.ask({question:'Synthetic target mismatch',request_id:'test-setup-1234'})).status,'NOT_READY');
+  assert.equal(count(x.calls,'trigger'),0);assert.deepEqual(await fs.readdir(x.dir),[]);
+ }finally{await x.cleanup()}
+});
+test('pending answer is collected only for the original prompt hash and conversation identity',async()=>{
+ let poll=0;const x=await setup({collect:async()=>poll++?completed:{status:'pending'}});try{
+  const a=await x.tool.ask({question:'Synthetic delayed answer',request_id:'test-pending-1'});
+  assert.equal(a.status,'PENDING');assert.equal((await x.tool.collect({request_id:'test-pending-1'})).status,'COMPLETED');
+  assert.equal(count(x.calls,'trigger'),1);assert.equal(count(x.calls,'collect'),2);
+  assert.equal(x.calls.find(x=>x.method==='collect').args.promptHash,sha('Synthetic delayed answer'));
+  assert.equal(x.calls.find(x=>x.method==='collect').args.conversationId,id);
+ }finally{await x.cleanup()}
+});
+test('same request ID cannot bind to another question',async()=>{
+ const x=await setup();try{
+  await x.tool.ask({question:'Synthetic A',request_id:'same-request-id'});
+  assert.equal((await x.tool.ask({question:'Synthetic B',request_id:'same-request-id'})).status,'REQUEST_MISMATCH');
+  assert.equal(count(x.calls,'trigger'),1);
+ }finally{await x.cleanup()}
+});
+test('a completed answer with wrong conversation identity is rejected',async()=>{
+ const wrongId='22222222-2222-4222-8222-222222222222';
+ const x=await setup({collect:async()=>({...completed,conversationId:wrongId,conversationUrl:'https://chatgpt.com/c/'+wrongId})});try{
+  const a=await x.tool.ask({question:'Synthetic wrong-target reply',request_id:'wrong-target-1234'});
+  assert.equal(a.status,'PENDING');assert.equal(a.answer,undefined);
+ }finally{await x.cleanup()}
+});
+test('a process crash after exclusive claim surfaces UNKNOWN without invoking Orca again',async()=>{
+ const x=await setup();try{
+  const question='Synthetic in-flight question',request_id='crash-receipt-1';
+  const file=path.join(x.dir,sha(profile+'\0'+request_id)+'.json');
+  await fs.writeFile(file,JSON.stringify({status:'DISPATCHING',request_id,prompt_hash:sha(question)}));
+  assert.equal((await x.tool.ask({question,request_id})).status,'UNKNOWN');
+  assert.equal(count(x.calls,'trigger'),0);
+ }finally{await x.cleanup()}
+});
+test('a cancelled Pi tool call never initiates Orca operations',async()=>{
+ const x=await setup();try{
+  const abort=new AbortController();abort.abort();
+  const r=await x.tool.ask({question:'Synthetic cancellation',request_id:'cancel-before-send'},abort.signal);
+  assert.equal(r.status,'NOT_READY');assert.equal(x.calls.length,0);
+ }finally{await x.cleanup()}
+});
+test('after an ambiguous click, collect may read-only recover exact conversation without resending',async()=>{
+ const x=await setup({trigger:async()=>({status:'unknown',reason:'CLICK_OUTCOME_UNKNOWN'}),recover:async({promptHash})=>{
+  assert.equal(promptHash,sha('Synthetic navigation race'));return submitted;
+ }});try{
+  const a=await x.tool.ask({question:'Synthetic navigation race',request_id:'recover-click-1234'});
+  assert.equal(a.status,'UNKNOWN');assert.equal(a.reason,'CLICK_OUTCOME_UNKNOWN');
+  const b=await x.tool.collect({request_id:'recover-click-1234'});
+  assert.equal(b.status,'COMPLETED');assert.equal(b.answer,'Synthetic acknowledgment');assert.equal(b.reason,undefined);
+  assert.equal(count(x.calls,'trigger'),1);assert.equal(count(x.calls,'recover'),1);
+ }finally{await x.cleanup()}
+});
+test('arbitrary host UNKNOWN cannot be auto-recovered as a successful click',async()=>{
+ const x=await setup({trigger:async()=>{throw Error('host outage')},recover:async()=>submitted});try{
+  const a=await x.tool.ask({question:'Synthetic uncertain host failure',request_id:'host-unknown-1234'});
+  assert.equal(a.status,'UNKNOWN');assert.equal((await x.tool.collect({request_id:'host-unknown-1234'})).status,'UNKNOWN');
+  assert.equal(count(x.calls,'recover'),0);assert.equal(count(x.calls,'trigger'),1);
+ }finally{await x.cleanup()}
+});
+
+test('four providers use independent durable receipt namespaces and reject cross-origin collect replies',async()=>{
+ const {createWebAskTool}=await import('./chatgpt-core.mjs');
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'pi-web-multi-core-'));
+ const providers={chatgpt:'https://chatgpt.com/c/',claude:'https://claude.ai/chat/',grok:'https://grok.com/c/',mistral:'https://chat.mistral.ai/work/'};
+ const counts={};
+ try{
+  for(const [provider,prefix] of Object.entries(providers)){
+   counts[provider]=0;
+   const t=createWebAskTool({provider,profile:'test-shared-profile',stateDir:dir,transport:{
+    readiness:async()=>true,
+    trigger:async()=>{counts[provider]++;return {status:'submitted',conversationId:id,conversationUrl:prefix+id}},
+    collect:async()=>({status:'completed',conversationId:id,conversationUrl:prefix+id,text:`${provider}-ack`,completionEvidence:'latest-assistant-terminal-action-v1'})
+   }});
+   const a=await t.ask({question:'Same question all providers',request_id:'shared-request-id'});
+   assert.equal(a.status,'COMPLETED');assert.equal(a.answer,`${provider}-ack`);
+   assert.equal((await t.ask({question:'Same question all providers',request_id:'shared-request-id'})).status,'COMPLETED');
+  }
+  assert.deepEqual(Object.values(counts),[1,1,1,1]);
+  assert.equal((await fs.readdir(dir)).length,4);
+  const claude=createWebAskTool({provider:'claude',profile:'different-profile',stateDir:dir,transport:{readiness:async()=>true,trigger:async()=>({status:'submitted',conversationId:id,conversationUrl:providers.grok+id})}});
+  assert.equal((await claude.ask({question:'Cross origin',request_id:'cross-origin-id'})).status,'UNKNOWN');
+ }finally{await fs.rm(dir,{recursive:true,force:true})}
+});
+
+test('a transport claiming completed without explicit UI evidence cannot persist a final answer',async()=>{
+ const x=await setup({collect:async()=>({status:'completed',conversationId:id,conversationUrl:url,text:'Incomplete response'})});
+ try{
+  const r=await x.tool.ask({question:'Synthetic slow generation',request_id:'no-ui-evidence-0001'});
+  assert.equal(r.status,'PENDING');assert.equal(r.answer,undefined);
+  assert.equal((await x.tool.status({request_id:'no-ui-evidence-0001'})).status,'PENDING');
+  assert.equal(count(x.calls,'trigger'),1);
+ }finally{await x.cleanup()}
+});
+test('legacy COMPLETED receipt without a completion proof is not trusted; read-only collect revalidates',async()=>{
+ const x=await setup();
+ try{
+  const request_id='legacy-unproved-0001',question='Synthetic incomplete legacy answer';
+  const filename=path.join(x.dir,sha(profile+'\0'+request_id)+'.json');
+  await fs.writeFile(filename,JSON.stringify({status:'COMPLETED',request_id,prompt_hash:sha(question),conversation_id:id,conversation_url:url,answer:'Partial answer'}));
+  const prior=await x.tool.status({request_id});assert.equal(prior.status,'UNKNOWN');assert.equal(prior.answer,undefined);assert.equal(prior.reason,'LEGACY_COMPLETION_UNVERIFIED');
+  const ask=await x.tool.ask({request_id,question});assert.equal(ask.status,'UNKNOWN');assert.equal(count(x.calls,'trigger'),0);
+  const collected=await x.tool.collect({request_id});assert.equal(collected.status,'COMPLETED');assert.equal(collected.answer,'Synthetic acknowledgment');
+  const saved=JSON.parse(await fs.readFile(filename,'utf8'));assert.equal(saved.completion_evidence,'latest-assistant-terminal-action-v1');
+  assert.equal(count(x.calls,'trigger'),0);assert.equal(count(x.calls,'collect'),1);
+ }finally{await x.cleanup()}
+});
+
+test('concurrent read-only collectors must not downgrade a journal COMPLETED result to PENDING',async()=>{
+ let last=Promise.resolve(),acquired=0;
+ let secondCollectStarted,releaseSecond;
+ const started=new Promise(resolve=>secondCollectStarted=resolve);
+ const hold=new Promise(resolve=>releaseSecond=resolve);
+ const withLock=fn=>{
+  acquired++;
+  const running=last.then(fn);
+  last=running.then(()=>{},()=>{});
+  return running;
+ };
+ let calls=0;
+ const x=await setup({withLock,collect:async()=>{
+  calls++;
+  if(calls===1)return {status:'pending'}; // first collect from ask()
+  if(calls===2){secondCollectStarted();await hold;return completed;}
+  return {status:'pending'}; // stale follow-up must not overwrite completed
+ }});
+ try{
+  const receipt='concurrent-collect-01';
+  assert.equal((await x.tool.ask({question:'Synthetic overlapping collect',request_id:receipt})).status,'PENDING');
+  const first=x.tool.collect({request_id:receipt});
+  await started;
+  const second=x.tool.collect({request_id:receipt});
+  // Ensure second entered `withLock` before permitting first to complete.
+  for(let i=0;i<100&&acquired<4;i++)await new Promise(r=>setTimeout(r,1));
+  assert.equal(acquired,4,'both collectors queued at the same per-provider browser lock');
+  releaseSecond();
+  assert.equal((await first).status,'COMPLETED');
+  assert.equal((await second).status,'COMPLETED','a later stale pending observation must not downgrade final');
+  assert.equal((await x.tool.status({request_id:receipt})).status,'COMPLETED');
+  assert.equal(calls,2,'after completion, do not invoke a second browser collect');
+ }finally{releaseSecond?.();await x.cleanup()}
+});
+
+test('a concurrent read-only UNKNOWN observation cannot overwrite a verified COMPLETED receipt',async()=>{
+ let last=Promise.resolve(),locked=0,resolveStarted,resolveHeld;
+ const started=new Promise(r=>resolveStarted=r),held=new Promise(r=>resolveHeld=r);
+ const withLock=fn=>{locked++;const active=last.then(fn);last=active.then(()=>{},()=>{});return active};
+ let calls=0;
+ const x=await setup({withLock,collect:async()=>{
+  calls++;
+  if(calls===1)return {status:'pending'};
+  if(calls===2){resolveStarted();await held;return completed;}
+  return {status:'unknown',reason:'TEMPORARY_UI_MISMATCH'};
+ }});
+ try{
+  const receipt='concurrent-collect-02';
+  assert.equal((await x.tool.ask({question:'Synthetic final monotonic',request_id:receipt})).status,'PENDING');
+  const first=x.tool.collect({request_id:receipt});await started;
+  const second=x.tool.collect({request_id:receipt});
+  for(let i=0;i<100&&locked<4;i++)await new Promise(r=>setTimeout(r,1));
+  assert.equal(locked,4);resolveHeld();
+  assert.equal((await first).status,'COMPLETED');
+  assert.equal((await second).status,'COMPLETED');
+  assert.equal((await x.tool.status({request_id:receipt})).status,'COMPLETED');
+  assert.equal(calls,2);
+ }finally{resolveHeld?.();await x.cleanup()}
+});
+
+test('two concurrent collectors of one UNKNOWN must not independently reconcile and overwrite the same receipt',async()=>{
+ let tail=Promise.resolve(),lockEntries=0,recoverCalls=0,unblock,signalStarted;
+ const recoverStarted=new Promise(r=>signalStarted=r),held=new Promise(r=>unblock=r);
+ const withLock=fn=>{
+  lockEntries++;
+  const active=tail.then(fn);tail=active.then(()=>{},()=>{});return active;
+ };
+ const x=await setup({withLock,
+  trigger:async()=>({status:'unknown',reason:'POST_CLICK_UNVERIFIED'}),
+  recover:async()=>{recoverCalls++;if(recoverCalls===1){signalStarted();await held}return submitted},
+  collect:async()=>completed
+ });
+ try{
+  const id='concurrent-recovery-01';
+  assert.equal((await x.tool.ask({question:'Synthetic recovered original',request_id:id})).status,'UNKNOWN');
+  const first=x.tool.collect({request_id:id});await recoverStarted;
+  const second=x.tool.collect({request_id:id});
+  for(let i=0;i<100&&lockEntries<3;i++)await new Promise(r=>setTimeout(r,1));
+  assert.equal(lockEntries,3,'both collectors queued before first recovery finished');
+  unblock();
+  assert.equal((await first).status,'COMPLETED');
+  assert.equal((await second).status,'COMPLETED');
+  assert.equal(recoverCalls,1,'second collector re-reads the recovered state inside the lock');
+  assert.equal((await x.tool.status({request_id:id})).status,'COMPLETED');
+  assert.equal(count(x.calls,'trigger'),1,'no original question is resent');
+ }finally{unblock?.();await x.cleanup()}
+});
