@@ -1,60 +1,83 @@
-# WSL Pi → ChatGPT via Orca CLI
+# WSL Pi → four Web Chat Providers through Orca CLI
 
-## Contract and runtime
+## Architecture
 
-The optional standalone Pi Extension exposes `ask_chatgpt`, `collect_chatgpt`, `chatgpt_status`, and `chatgpt_readiness`. It uses the installed **Orca CLI**, **not Browser Harness** or the Windows Runner. The separate n8n 9B Pi Workers still launch with `--no-extensions`, so they do not gain these tools.
+The optional, standalone Pi Coding Agent extension exposes four explicit Ask tools, with a **single shared request/receipt state machine**. Provider-specific Web implementations are local rules, not four copies of the send/journal logic:
 
 ```text
-Standalone Pi Coding Agent
-  → extension.mjs (local configuration; no model-selected worktree or page)
-  → chatgpt-core.mjs (local durable request journal; one original send per request ID)
-  → orca-cli.mjs (WSL Orca CLI; page-bound tab/list, snapshot, eval, fill, click)
-  → explicitly pinned ChatGPT page in the existing Orca worktree
+Pi ask_chatgpt | ask_claude | ask_grok | ask_mistral
+    ↓
+extension.mjs → web-ask-core.mjs / createWebAskTool (shared state machine)
+    ↓
+web-providers.mjs (origin, conversation route, editor, submit, message body)
+    ↓
+orca-cli.mjs (pinned worktree and page, read-only recovery, exactly one send)
+    ↓
+Existing authenticated Orca pi-usage browser tabs (one per provider)
 ```
 
-Orca's browser is separate from Chrome/CDP Browser Harness. No new browser profile, login, tab, worktree, or daemon is created by the tool.
+The original `chatgpt-core.mjs` remains a minimal compatibility re-export. The old `createChatGptTool` factory is an alias to the shared `createWebAskTool({provider:'chatgpt'})`; historical ChatGPT local receipts retain their namespace. This extension **does not use Browser Harness**, change browser profiles, or install into n8n's separate 9B Workers, which still launch with `--no-extensions`.
 
-## Local setup
+## Pi tool contracts
 
-Requires WSL2 with a working `orca-ide` executable, an authenticated existing ChatGPT tab in Orca, and Pi 0.85.1+. Check the target with `orca-ide tab list --worktree all --json`. Set a **stable exact worktree `id:` selector and `browserPageId`** from the result (never `active`). Keep this configuration outside the repository at `~/.config/queqiao/pi-chatgpt.json` with mode `0600`:
+| Provider | Ask | Collect | Receipt | Readiness |
+|---|---|---|---|---|
+| ChatGPT | `ask_chatgpt` | `collect_chatgpt` | `chatgpt_status` | `chatgpt_readiness` |
+| Claude | `ask_claude` | `collect_claude` | `claude_status` | `claude_readiness` |
+| Grok | `ask_grok` | `collect_grok` | `grok_status` | `grok_readiness` |
+| Mistral | `ask_mistral` | `collect_mistral` | `mistral_status` | `mistral_readiness` |
+
+`ask_*({question,request_id?})` accepts only question plus an optional idempotency key. `collect_*({request_id})` never sends; it reads the original conversation or safely reconciles an ambiguous click. `*_status({request_id})` reads local journal only. `*_readiness({})` checks the configured page without sending. The model **cannot** select a provider's Worktree, Page ID, role, session or account through tool arguments. Cross-provider fallback is outside this scope.
+
+State contract: `COMPLETED`, `PENDING`, `UNKNOWN`, `NOT_SENT`, `NOT_READY`, `NOT_FOUND`, `REQUEST_MISMATCH` and invalid-input errors. An exclusive request ID claim prevents duplicate sends. A process error after claim is `UNKNOWN`, never an automatic retry. Only `CLICK_OUTCOME_UNKNOWN` / `POST_CLICK_UNVERIFIED` may be reconciled by **read-only** matching of the pinned page, verified original prompt hash, canonical conversation identity and settled answer. A deterministic default request ID hashes the provider namespace and exact question. The journal records hashes, receipt IDs, URLs and answer text; it never stores the raw question.
+
+## Local setup (operator; never commit)
+
+Requires WSL2 + Pi 0.85.1+, installed `orca-ide`, four already authenticated site tabs in an existing Orca Worktree. Discover the **stable** `worktreeId` and `browserPageId` using `orca-ide tab list --worktree all --json`. Never use an `active` page selector. Keep this file outside Git at `~/.config/queqiao/pi-chatgpt.json`, mode `0600`:
 
 ```json
 {
-  "profile": "standalone-pi-orca",
+  "profile": "pi-web-standalone",
   "cli": "/home/<WSL_USER>/.local/bin/orca-ide",
-  "worktree": "id:<ORCA_WORKTREE_ID>",
-  "pageId": "<EXISTING_CHATGPT_BROWSER_PAGE_UUID>",
-  "stateDir": "/home/<WSL_USER>/.local/state/queqiao/pi-chatgpt",
-  "lockFile": "/home/<WSL_USER>/.local/state/queqiao/pi-chatgpt/orca-cli.lock"
+  "stateDir": "/home/<WSL_USER>/.local/state/queqiao/pi-web",
+  "lockFile": "/home/<WSL_USER>/.local/state/queqiao/pi-web/orca-cli.lock",
+  "providers": {
+    "chatgpt": {"worktree": "id:<EXISTING_ORCA_WORKTREE_ID>", "pageId": "<CHATGPT_PAGE_UUID>"},
+    "claude": {"worktree": "id:<EXISTING_ORCA_WORKTREE_ID>", "pageId": "<CLAUDE_PAGE_UUID>"},
+    "grok": {"worktree": "id:<EXISTING_ORCA_WORKTREE_ID>", "pageId": "<GROK_PAGE_UUID>"},
+    "mistral": {"worktree": "id:<EXISTING_ORCA_WORKTREE_ID>", "pageId": "<MISTRAL_PAGE_UUID>"}
+  }
 }
 ```
 
-`profile` is only a **local journal namespace**, not an Orca/Browser Harness profile. Prefer an **absolute** `cli` executable path: noninteractive jobs can have a different PATH from the WSL shell. The lock is dedicated to this Pi Orca tool, not the Browser Harness CDP lock. The directory for `lockFile` must exist.
+An existing old ChatGPT-only configuration with top-level `worktree`/`pageId` still works for ChatGPT. New providers require their explicit `providers[provider]` entry. `profile` denotes only a **journal namespace**, not an Orca browser profile. Use an absolute `cli` path, since noninteractive Pi/Queqiao jobs may not load a shell PATH. Ensure the lock's parent directory exists. The same lock across providers serializes mutable operations.
 
-Install locally with `node pi/install.mjs`. The installer removes the tool-owned legacy `windows-runner.mjs` only when its known signature matches. This installs `index.ts`, `chatgpt-core.mjs`, `orca-cli.mjs` and TypeBox into `~/.pi/agent/extensions/queqiao-chatgpt/`; it does not mutate existing Orca sessions. For a one-off load use `pi --extension /absolute/path/to/pi/extension.mjs`.
+Install using `node pi/install.mjs`; it copies `index.ts`, `web-ask-core.mjs`, compatibility `chatgpt-core.mjs`, `orca-cli.mjs`, `web-providers.mjs`, and local TypeBox dependencies to `~/.pi/agent/extensions/queqiao-chatgpt/`. The installer only removes a known-signature legacy Windows Runner module, never an unrelated file. Pi discovers the installed tools on startup. The installation does not create, close or switch Orca tabs.
 
-## Isolation and safety
+## Browser isolation and data safety
 
-- The transport finds the exact `pageId` **within the fixed worktree** on every operation, verifies `chatgpt.com` origin and supported URL, and refuses mismatched/missing targets. It never falls back to a global active tab.
-- Only `tab list`, `snapshot`, read-only `eval`, `fill`, `click` and, when necessary, `goto` are called. Every page operation is bound to `--worktree` and `--page`; fill, click and navigation also use `--expect-url`.
-- `goto` can navigate **only the pinned ChatGPT page** to the home page to start another conversation, after checking that no draft exists or generation is active. The tool never invokes `tab close`, `tab switch`, `tab create`, profile changes, or app shutdown. It never accesses another model's tab.
-- Each request is claimed exclusively before any possible send. After clicking, the CLI may report a navigation error **even when the message was sent**. Only a **read-only** reinspection of the same pinned page, exact original prompt SHA-256, and canonical conversation URL may reconcile this outcome. **Never click again, automatically resend, or switch to another conversation.**
-- The journal contains request IDs, hashes, verified conversation URLs/IDs, states and collected answer text, **never the raw question**. Local records are mode `0600` in a mode `0700` directory.
-- Orca's `fill --value` currently places the prompt in an operating-system process argument; unlike the previous stdin-based Runner, this does not conceal it from same-host process inspection. **Do not send secrets, tokens, passwords or personal data through this tool.** The Pi Tool does not expose worktree/page selection to model arguments.
+- Every Orca operation is pinned to **both** an existing worktree and the exact provider Page ID. `tab list` confirms the page's worktree, allowed hostname, home/conversation route and permitted query parameters before any further operation.
+- `fill`, `click`, `keypress` and `goto` use `--page`, `--worktree`, and `--expect-url`. Read-only `eval` can inspect the exact matching tab but cannot send/click through DOM JavaScript. `tab close`, `tab create`, `tab switch`, browser profile mutation, session cloning and Orca shutdown are not permitted.
+- Only the selected page may navigate back to its own provider's new-chat URL, and only after checking for existing drafts and active generation. An occupied draft causes `NOT_SENT`, not overwriting other content.
+- Each provider uses an explicit original-message selector and response-body selector. Claude's Send button can appear after React updates; retrying its **read-only discovery** is permitted, never retrying an attempted send. Grok and Mistral use one `Enter` submission after verifying the filled editor. ChatGPT and Claude use a verified named Send button.
+- New Grok conversations have been observed with `?rid=<UUID>`; only that sole, valid parameter is allowed for Grok, and the saved receipt is canonicalized to `grok.com/c/<UUID>` without query. Other unexpected query parameters, hosts, routes or cross-provider collect results are rejected.
+- Prompt text is passed to Orca CLI as the `fill --value` process argument. On a shared host another process with sufficient access may observe command arguments. **Do not transmit secrets, credentials, private user information or confidential content through these tools.** Keep journal files mode `0600` in mode `0700` directories and never commit local URLs, prompts, browser/identity data or credentials.
 
-## Results and durable states
+## Tests and live acceptance
 
-- `ask_chatgpt({question,request_id?})`: starts one **new conversation in the designated page**, submits exactly once and attempts collection. A default request ID is a deterministic hash; use a distinct explicit ID to intentionally repeat an identical question.
-- `collect_chatgpt({request_id})`: reads only the original recorded conversation, never resends. For explicit post-click ambiguity (`CLICK_OUTCOME_UNKNOWN` or `POST_CLICK_UNVERIFIED`), it may perform a **read-only** original-question-hash reconciliation before collecting.
-- `chatgpt_status({request_id})`: local journal read, no browser action.
-- `chatgpt_readiness({})`: verifies exact Orca target and accessibility textbox; this is not a send receipt.
+Run `npm run test:pi` and `npm run check`. `.github/workflows/ci.yml` already calls `npm run check`, including the Pi tests. Unit tests use synthetic only: original-hash identity, cross-provider namespace separation, correct URL grammar, isolated page IDs, allowed CLI actions, site-specific editor/send/read selectors, read-only recovery, stale send control, package contents, and Pi public-tool schemas. `npm pack --dry-run` must include `pi/web-providers.mjs` and exclude the old Windows Runner.
 
-Statuses: `COMPLETED` (answer from exact conversation), `PENDING` (send proved, answer not yet settled), `UNKNOWN` (post-click outcome unverified; **do not retry `ask` with that ID**), `NOT_SENT` (verified pre-send stop), `NOT_READY`, `REQUEST_MISMATCH`, `NOT_FOUND` and invalid-input errors. Collection verifies the original prompt hash, canonical `chatgpt.com/c/<uuid>` and stable assistant answer over two observations. ChatGPT UI markup is site-controlled and must be verified after upstream changes.
+**Real site checks, 2026-11-06** — all targeted the user-provisioned `pi-usage` worktree and existing provider tabs:
 
-## Verification
+| Provider | Observed behavior | Site-level result |
+|---|---|---|
+| ChatGPT | Localized `你說：/ChatGPT 說：` headings; click/navigation races | `COMPLETED` with exact synthetic ACK (previous PR #78 E2E) |
+| Claude | ProseMirror `textbox`; delayed Send control; response card includes a toolbar | `COMPLETED` with exact synthetic ACK; initial `NOT_SENT` draft safely cleared |
+| Grok | ProseMirror `combobox`; one Enter; `?rid` URL; role headers surround message bodies | Read-only recovery of original send → `COMPLETED`, exact ACK |
+| Mistral | Generic editable `ProseMirror`; one Enter; user bubble lacks `data-testid` | Read-only recovery of original send → `COMPLETED`, exact ACK |
 
-Run `npm run test:pi` and `npm run check`. The existing GitHub Actions CI executes `npm run check`, including the Pi tests. Tests cover immutable worktree/page binding, empty/draft preconditions, exactly-once click, post-click read-only recovery, original question/answer correlation, no tab-close/switch calls, Pi tool schema, installation and durable idempotency. CI uses only synthetic data and never depends on a logged-in browser.
+On each separate site E2E, global Orca Page ID sets were identical before/after, other tab URLs did not change, and **no browser tabs were closed**. The global tab count can change *between* runs due to unrelated user activity; do not compare against one historical count.
 
-**Live acceptance (2026-11-06):** The target Orca worktree was the user-provisioned `pi-usage` workspace with four existing provider tabs (ChatGPT, Claude, Grok, Mistral). A real `ask` operation on its pinned ChatGPT tab submitted a synthetic question and received an exact acknowledgment. The first receipt was `UNKNOWN` because current ChatGPT messages use localized accessible headings (`你說：` / `ChatGPT 說：`), not the older `data-message-author-role` selector. A second distinct synthetic send also reached ChatGPT despite an Orca click/navigation race; **read-only** question-hash verification and `collect` recovered the original conversation and returned `COMPLETED` with the exact acknowledgment. In both runs, before/after global Orca page-ID sets were identical and all other tab URLs stayed unchanged. The global count may vary when other Orca users independently create tabs; compare sets **within each individual run**, not to a hardcoded count. A subsequent **native Pi model-issued E2E** invoked installed `ask_chatgpt` (`PENDING`) and then `collect_chatgpt` (`COMPLETED`) in the same Pi agent run. The collected answer exactly matched the synthetic acknowledgment, and the Pi process exited with code `0`.
+**Native Pi model-issued E2E (2026-11-06):** standalone Pi Coding Agent invoked the real installed tools, without mock transports, and received exact synthetic acknowledgments. Claude: one `ask_claude` → `COMPLETED`; Grok: one `ask_grok` → `COMPLETED`; Mistral: `ask_mistral` → `PENDING`, then `collect_mistral` → `COMPLETED`. Every Pi process exited with code `0`. An earlier native ChatGPT test also completed `ask_chatgpt` + `collect_chatgpt` with exact ACK. None needed a duplicate send or cross-provider fallback.
 
-A live `COMPLETED` acknowledgment is required before merging the Pi integration PR. Successful snapshots alone, an unknown click state, or unit tests alone do not satisfy this gate.
+Site DOM may change; new upstream selectors require fresh verification rather than speculative fixes. The final delivery gate also requires a fresh `npm run check`, installed-package verification, successful GitHub Actions CI on the actual commit, and independent code review before merge.

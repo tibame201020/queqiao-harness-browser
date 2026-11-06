@@ -19,7 +19,9 @@
   "files": [
     "dist/",
     "pi/chatgpt-core.mjs",
+    "pi/web-ask-core.mjs",
     "pi/orca-cli.mjs",
+    "pi/web-providers.mjs",
     "pi/install.mjs",
     "pi/extension.mjs",
     "README.md",

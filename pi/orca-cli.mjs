@@ -3,26 +3,17 @@
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
+import {WEB_PROVIDERS,WEB_READONLY_INSPECT_JS,isAllowedPage,canonicalPageUrl,conversationIdFromUrl,validateConversation,editorRefForSnapshot,sendRefForSnapshot} from './web-providers.mjs';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA=/^[0-9a-f]{64}$/;
 const sha=text=>createHash('sha256').update(text).digest('hex');
 const sleep=(ms,signal)=>new Promise((resolve,reject)=>{if(signal?.aborted)return reject(Error('ORCA_ABORTED'));let timer;const onAbort=()=>{clearTimeout(timer);reject(Error('ORCA_ABORTED'))};timer=setTimeout(()=>{signal?.removeEventListener('abort',onAbort);resolve()},ms);signal?.addEventListener('abort',onAbort,{once:true})});
-function validUrl(url){
- try{const x=new URL(url);return x.origin==='https://chatgpt.com'&&!x.search&&!x.hash&&
- (x.pathname==='/'||new RegExp('^/c/'+UUID.source.slice(1,-1)+'$','i').test(x.pathname));}
- catch{return false}
-}
-function urlConversationId(url){
- if(!validUrl(url))return null;
- const id=new URL(url).pathname.split('/')[2];return UUID.test(id||'')?id:null;
-}
-
 // Exactly one JSON Orca result; never log argv, stdin, prompts, stdout, or raw errors.
 export function createOrcaCommandRunner({cli='orca-ide',spawnProcess=spawn,timeoutMs=25000}={}){
  if(typeof cli!=='string'||!cli||cli.includes('\n')||cli.includes('\r'))throw Error('INVALID_ORCA_CLI');
  return (command,args=[],signal)=>new Promise((resolve,reject)=>{
-  if(!['tab','snapshot','eval','fill','click','goto'].includes(command))return reject(Error('ORCA_COMMAND_DENIED'));
+  if(!['tab','snapshot','eval','fill','click','goto','keypress'].includes(command))return reject(Error('ORCA_COMMAND_DENIED'));
   if(command==='tab'&&args[0]!=='list')return reject(Error('ORCA_TAB_MUTATION_DENIED'));
   const child=spawnProcess(cli,[command,...args,'--json'],{stdio:['ignore','pipe','pipe'],shell:false});
   let out='',errBytes=0,settled=false,closed=false;
@@ -69,15 +60,15 @@ export const ORCA_READONLY_INSPECT_JS=`(() => {
   generationActive:!!document.querySelector('[data-testid="stop-button"],button[aria-label="Stop generating"],button[aria-label="停止生成"]')};
 })()`;
 
-function normalizeState(raw){
+function normalizeState(raw,provider){
  const x=typeof raw?.result==='string'?JSON.parse(raw.result):raw;
- if(!x||typeof x!=='object'||!validUrl(x.url))throw Error('ORCA_INVALID_PAGE_STATE');
+ if(!x||typeof x!=='object'||!isAllowedPage(provider,x.url))throw Error('ORCA_INVALID_PAGE_STATE');
  return x;
 }
 const fullArgs=(worktree,pageId)=>['--worktree',worktree,'--page',pageId];
-const SEND=/^(send|send message|傳送|傳送訊息|送出|发送|发送消息)(?:\s.*)?$/i;
 
-export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,run=createOrcaCommandRunner({cli}),settleMs=650}={}){
+export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,provider='chatgpt',run=createOrcaCommandRunner({cli}),settleMs=650}={}){
+ const site=WEB_PROVIDERS[provider];if(!site)throw Error('UNKNOWN_WEB_PROVIDER');
  if(typeof worktree!=='string'||!(/^(id|name):[^\r\n]{6,240}$/.test(worktree)))throw Error('INVALID_ORCA_WORKTREE');
  if(!UUID.test(pageId||''))throw Error('INVALID_ORCA_PAGE_ID');
  if(!Number.isFinite(settleMs)||settleMs<0)throw Error('INVALID_SETTLE_MS');
@@ -88,23 +79,23 @@ export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,run=creat
   const pages=result?.tabs;
   if(!Array.isArray(pages))throw Error('ORCA_INVALID_TAB_LIST');
   const found=pages.filter(x=>x.browserPageId===pageId);
-  if(found.length!==1||!validUrl(found[0].url))throw Error('ORCA_TARGET_MISMATCH');
+  if(found.length!==1||!isAllowedPage(provider,found[0].url))throw Error('ORCA_TARGET_MISMATCH');
   if(worktree.startsWith('id:')&&found[0].worktreeId!==worktree.slice(3))throw Error('ORCA_WORKTREE_MISMATCH');
   return found[0];
  }
  async function inspect(url,signal){
-  const r=await exec('eval',['--expression',ORCA_READONLY_INSPECT_JS,...pinned,'--expect-url',url],signal);
-  const state=normalizeState(r);
-  if(state.url!==url)throw Error('ORCA_URL_CHANGED');
+  const r=await exec('eval',['--expression',provider==='chatgpt'?ORCA_READONLY_INSPECT_JS:WEB_READONLY_INSPECT_JS[provider],...pinned,'--expect-url',url],signal);
+  const state=normalizeState(r,provider);
+  if(state.url!==canonicalPageUrl(provider,url))throw Error('ORCA_URL_CHANGED');
   return state;
  }
  async function snapshot(url,signal){
-  const r=await exec('snapshot',['--interactive',...pinned],signal);
+  const r=await exec('snapshot',[...(site.snapshotInteractive?['--interactive']:[]),...pinned],signal);
   if(r.browserPageId!==pageId||r.url!==url||!r.refs||typeof r.refs!=='object')throw Error('ORCA_SNAPSHOT_TARGET_MISMATCH');
   return r;
  }
- function editorRef(s){const xs=Object.entries(s.refs).filter(([,v])=>v?.role==='textbox');return xs.length===1?xs[0][0]:null}
- function sendRef(s){const xs=Object.entries(s.refs).filter(([,v])=>v?.role==='button'&&SEND.test(v.name||''));return xs.length===1?xs[0][0]:null}
+ function editorRef(s){return editorRefForSnapshot(provider,s)}
+ function sendRef(s){return sendRefForSnapshot(provider,s)}
  async function readiness(signal){
   try{
    const t=await tab(signal);const s=await snapshot(t.url,signal);
@@ -114,12 +105,12 @@ export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,run=creat
  async function recover({promptHash},signal){
   if(!SHA.test(promptHash||''))return {status:'unknown',reason:'INVALID_HASH'};
   try{
-   const t=await tab(signal),conversationId=urlConversationId(t.url);
+   const t=await tab(signal),conversationId=conversationIdFromUrl(provider,t.url);
    if(!conversationId)return {status:'unknown',reason:'NO_CONVERSATION_ID'};
    const observed=await inspect(t.url,signal);
    if(observed.userCount<1||typeof observed.lastUserText!=='string'||sha(observed.lastUserText)!==promptHash)
     return {status:'unknown',reason:'ORIGINAL_PROMPT_NOT_VERIFIED'};
-   return {status:'submitted',conversationId,conversationUrl:t.url};
+   return {status:'submitted',conversationId,conversationUrl:canonicalPageUrl(provider,t.url)};
   }catch{return {status:'unknown',reason:'READ_ONLY_RECOVERY_FAILED'}}
  }
  async function verifyAfterClick(promptHash,signal){
@@ -140,11 +131,11 @@ export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,run=creat
    if(typeof state.editorText!=='string')return {status:'not_sent',reason:'COMPOSER_UNAVAILABLE'};
    if(state.editorText.trim())return {status:'not_sent',reason:'DRAFT_PRESENT'};
    if(state.generationActive)return {status:'not_sent',reason:'GENERATION_ACTIVE'};
-   if(url!=='https://chatgpt.com/'){
+   if(url!==site.home){
     // Only this pinned, dedicated page may navigate; other Orca tabs are never touched.
-    await exec('goto',['--url','https://chatgpt.com/',...pinned,'--expect-url',url],signal);
+    await exec('goto',['--url',site.home,...pinned,'--expect-url',url],signal);
     t=await tab(signal);url=t.url;
-    if(url!=='https://chatgpt.com/')return {status:'not_sent',reason:'NEW_CHAT_UNAVAILABLE'};
+    if(url!==site.home)return {status:'not_sent',reason:'NEW_CHAT_UNAVAILABLE'};
     state=await inspect(url,signal);
     if(state.editorText?.trim()||state.generationActive||state.editorCount!==1)return {status:'not_sent',reason:'COMPOSER_NOT_EMPTY'};
    }
@@ -154,11 +145,19 @@ export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,run=creat
    await exec('fill',['--element',editor,'--value',question,...pinned,'--expect-url',url],signal);
    state=await inspect(url,signal);
    if(state.editorText!==question)return {status:'not_sent',reason:'PROMPT_INTEGRITY_FAILED'};
-   const after=await snapshot(url,signal);const send=sendRef(after);
-   if(!send)return {status:'not_sent',reason:'SEND_CONTROL_UNAVAILABLE'};
-   // After this point a failure is ambiguous. Never click twice.
+   let send=null;
+   if(site.sendMode==='click'){
+    for(let i=0;i<5;i++){
+     const after=await snapshot(url,signal);send=sendRef(after);
+     if(send)break;
+     if(i<4)await sleep(Math.max(100,Math.min(settleMs,500)),signal);
+    }
+    if(!send)return {status:'not_sent',reason:'SEND_CONTROL_UNAVAILABLE'};
+   }
+   // After this point a failure is ambiguous. Never submit twice.
    clicked=true;
-   await exec('click',['--element',send,...pinned,'--expect-url',url],signal);
+   if(site.sendMode==='enter')await exec('keypress',['--key','Enter',...pinned,'--expect-url',url],signal);
+   else await exec('click',['--element',send,...pinned,'--expect-url',url],signal);
    // A successful click is NOT sufficient. Only read the pinned page to prove
    // the original user turn; never click again if navigation races the CLI.
    return await verifyAfterClick(sha(question),signal);
@@ -170,16 +169,16 @@ export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,run=creat
  }
 
  async function collect({conversationId,conversationUrl,promptHash},signal){
-  if(!UUID.test(conversationId||'')||urlConversationId(conversationUrl)!==conversationId||!SHA.test(promptHash||''))return {status:'unknown'};
+  if(!UUID.test(conversationId||'')||conversationIdFromUrl(provider,conversationUrl)!==conversationId||!SHA.test(promptHash||''))return {status:'unknown'};
   try{
    const t=await tab(signal);
    // Never silently change another active conversation or other Orca tab.
-   if(t.url!==conversationUrl)return {status:'pending',reason:'TARGET_NOT_CURRENT'};
-   const s=await inspect(conversationUrl,signal);
+   if(canonicalPageUrl(provider,t.url)!==conversationUrl)return {status:'pending',reason:'TARGET_NOT_CURRENT'};
+   const s=await inspect(t.url,signal);
    if(typeof s.lastUserText!=='string'||sha(s.lastUserText)!==promptHash)return {status:'unknown',reason:'ORIGINAL_PROMPT_MISMATCH'};
    if(s.generationActive||typeof s.assistantText!=='string'||!s.assistantText.trim())return {status:'pending'};
    if(settleMs)await sleep(settleMs,signal);
-   const s2=await inspect(conversationUrl,signal);
+   const s2=await inspect(t.url,signal);
    if(s2.generationActive||s2.lastUserText!==s.lastUserText||s2.assistantText!==s.assistantText)return {status:'pending'};
    return {status:'completed',conversationId,conversationUrl,text:s2.assistantText};
   }catch{return {status:'pending',reason:'COLLECT_UNAVAILABLE'}}

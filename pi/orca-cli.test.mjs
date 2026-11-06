@@ -114,3 +114,38 @@ test('read-only recover confirms only the pinned conversation with the exact pro
  assert.equal(r.status,'submitted');assert.equal(r.conversationId,conversation);
  assert.ok(f.calls.every(([op])=>op==='tab'||op==='eval'));
 });
+
+test('Claude waits for React to render the exact Send message control after fill, never clicks early',async()=>{
+ const claudeHome='https://claude.ai/new',claudeUrl='https://claude.ai/chat/'+conversation;
+ const claudeSnap=send=>({url:claudeHome,browserPageId:pageId,refs:{e1:{role:'textbox',name:'Write your prompt to Claude'},...(send?{e2:{role:'button',name:'Send message'}}:{})}});
+ const f=stub([['tab',{tabs:[tab(claudeHome)]}],['eval',{url:claudeHome,editorText:'',editorCount:1,generationActive:false}],
+  ['snapshot',claudeSnap(false)],['fill',{ok:true}],['eval',{url:claudeHome,editorText:prompt,editorCount:1,generationActive:false}],
+  ['snapshot',claudeSnap(false)],['snapshot',claudeSnap(true)],['click',{ok:true}],
+  ['tab',{tabs:[tab(claudeUrl)]}],['eval',{url:claudeUrl,lastUserText:prompt,userCount:1,assistantText:'ACK',generationActive:false}]]);
+ const result=await createOrcaCliTransport({...opts(f.run),provider:'claude'}).trigger({question:prompt});
+ assert.equal(result.status,'submitted');assert.equal(f.calls.filter(([op])=>op==='click').length,1);
+});
+
+test('Grok sends with one Enter on its pinned combobox, then read-only recovers canonical URL without rid',async()=>{
+ const grokHome='https://grok.com/',rid='22222222-2222-4222-8222-222222222222';
+ const grokUrl='https://grok.com/c/'+conversation+'?rid='+rid;
+ const f=stub([['tab',{tabs:[tab(grokHome)]}],['eval',{url:grokHome,editorCount:1,editorText:'',generationActive:false}],
+  ['snapshot',{url:grokHome,browserPageId:pageId,refs:{e1:{role:'combobox',name:'Ask Grok'}}}],
+  ['fill',{ok:true}],['eval',{url:grokHome,editorCount:1,editorText:prompt,generationActive:false}],
+  ['keypress',args=>{assert.ok(args.includes('--expect-url'));assert.ok(args.includes(pageId));return {ok:true}}],
+  ['tab',{tabs:[tab(grokUrl)]}],['eval',{url:'https://grok.com/c/'+conversation,lastUserText:prompt,userCount:1,assistantText:'ACK',generationActive:false}]]);
+ const x=await createOrcaCliTransport({...opts(f.run),provider:'grok'}).trigger({question:prompt});
+ assert.equal(x.status,'submitted');assert.equal(x.conversationUrl,'https://grok.com/c/'+conversation);
+ assert.equal(f.calls.filter(([cmd])=>cmd==='keypress').length,1);assert.equal(f.calls.filter(([cmd])=>cmd==='click').length,0);
+});
+test('Mistral uses a verified generic editable ref and submits once with Enter, no tab mutation',async()=>{
+ const home='https://chat.mistral.ai/work';
+ const conv='https://chat.mistral.ai/work/'+conversation;
+ const snapshot0={url:home,browserPageId:pageId,refs:{e8:{role:'generic',name:''}},snapshot:'- generic [ref=e8] editable [contenteditable]:'};
+ const f=stub([['tab',{tabs:[tab(home)]}],['eval',{url:home,editorCount:1,editorText:'',generationActive:false}],
+  ['snapshot',snapshot0],['fill',args=>{assert.ok(args.includes('e8'));return {ok:true}}],
+  ['eval',{url:home,editorCount:1,editorText:prompt,generationActive:false}],['keypress',{ok:true}],
+  ['tab',{tabs:[tab(conv)]}],['eval',{url:conv,lastUserText:prompt,userCount:1,assistantText:'ACK',generationActive:false}]]);
+ const x=await createOrcaCliTransport({...opts(f.run),provider:'mistral'}).trigger({question:prompt});
+ assert.equal(x.status,'submitted');assert.ok(f.calls.every(([cmd])=>!['click','close','switch','create'].includes(cmd)));
+});

@@ -113,3 +113,27 @@ test('arbitrary host UNKNOWN cannot be auto-recovered as a successful click',asy
   assert.equal(count(x.calls,'recover'),0);assert.equal(count(x.calls,'trigger'),1);
  }finally{await x.cleanup()}
 });
+
+test('four providers use independent durable receipt namespaces and reject cross-origin collect replies',async()=>{
+ const {createWebAskTool}=await import('./chatgpt-core.mjs');
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'pi-web-multi-core-'));
+ const providers={chatgpt:'https://chatgpt.com/c/',claude:'https://claude.ai/chat/',grok:'https://grok.com/c/',mistral:'https://chat.mistral.ai/work/'};
+ const counts={};
+ try{
+  for(const [provider,prefix] of Object.entries(providers)){
+   counts[provider]=0;
+   const t=createWebAskTool({provider,profile:'test-shared-profile',stateDir:dir,transport:{
+    readiness:async()=>true,
+    trigger:async()=>{counts[provider]++;return {status:'submitted',conversationId:id,conversationUrl:prefix+id}},
+    collect:async()=>({status:'completed',conversationId:id,conversationUrl:prefix+id,text:`${provider}-ack`})
+   }});
+   const a=await t.ask({question:'Same question all providers',request_id:'shared-request-id'});
+   assert.equal(a.status,'COMPLETED');assert.equal(a.answer,`${provider}-ack`);
+   assert.equal((await t.ask({question:'Same question all providers',request_id:'shared-request-id'})).status,'COMPLETED');
+  }
+  assert.deepEqual(Object.values(counts),[1,1,1,1]);
+  assert.equal((await fs.readdir(dir)).length,4);
+  const claude=createWebAskTool({provider:'claude',profile:'different-profile',stateDir:dir,transport:{readiness:async()=>true,trigger:async()=>({status:'submitted',conversationId:id,conversationUrl:providers.grok+id})}});
+  assert.equal((await claude.ask({question:'Cross origin',request_id:'cross-origin-id'})).status,'UNKNOWN');
+ }finally{await fs.rm(dir,{recursive:true,force:true})}
+});
