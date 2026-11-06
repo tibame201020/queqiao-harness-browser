@@ -62,3 +62,90 @@ test('Mistral original user text comes from the message bubble rather than an ab
  const state=runInNewContext(WEB_READONLY_INSPECT_JS.mistral,{document,location:{origin:'https://chat.mistral.ai',pathname:'/work/12345678-1234-4234-8234-123456789abc'}});
  assert.equal(state.lastUserText,'EXACT_MISTRAL_QUESTION');assert.equal(state.assistantText,'EXACT_MISTRAL_ACK');
 });
+
+test('Claude editor paragraph DOM reconstructs exact multi-line prompt without visual innerText extra newlines', async()=>{
+ const {runInNewContext}=await import('node:vm');
+ const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const parts=['ProjectTag: SYNTHETIC','Goal: Inspect the toy strategy','Acceptance: Return only test ACK','No real credentials or user data'];
+ const exact=parts.join('\n');
+ const nodes=parts.map(x=>({tagName:'P',textContent:x,childNodes:[{nodeType:3,textContent:x}]}));
+ const editor={innerText:parts.join('\n\n'),textContent:parts.join(''),children:nodes,getClientRects:()=>[{}]};
+ const doc={querySelectorAll:s=>s.includes('chat-input')?[editor]:[],querySelector:()=>null};
+ const value=runInNewContext(WEB_READONLY_INSPECT_JS.claude,{document:doc,location:{origin:'https://claude.ai',pathname:'/new'}});
+ assert.equal(value.editorText,exact,'logical paragraph separators must match exact original question');
+});
+
+test('Claude paragraph canonicalization preserves intentionally empty paragraph and nested inline text', async()=>{
+ const {runInNewContext}=await import('node:vm');const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const children=[
+  {tagName:'P',textContent:'Alpha',childNodes:[{nodeType:1,tagName:'STRONG',childNodes:[{nodeType:3,textContent:'Alpha'}]}]},
+  {tagName:'P',textContent:'',childNodes:[{nodeType:1,tagName:'BR',childNodes:[]}]},
+  {tagName:'P',textContent:'Beta',childNodes:[{nodeType:3,textContent:'Beta'}]}
+ ];
+ const editor={innerText:'Alpha\n\n\n\nBeta',textContent:'AlphaBeta',children,getClientRects:()=>[{}]};
+ const document={querySelectorAll:s=>s.includes('chat-input')?[editor]:[],querySelector:()=>null};
+ const result=runInNewContext(WEB_READONLY_INSPECT_JS.claude,{document,location:{origin:'https://claude.ai',pathname:'/new'}});
+ assert.equal(result.editorText,'Alpha\n\nBeta');
+});
+
+test('Grok paragraph editor preserves exact multiline question instead of extra visual innerText blank lines', async()=>{
+ const {runInNewContext}=await import('node:vm');
+ const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const parts=['ProjectTag: SYNTHETIC','Goal: Evaluate a toy paper trading strategy','Important: This is only a synthetic fixture','Ask for the ProjectTag from the file'];
+ const nodes=parts.map(text=>({tagName:'P',textContent:text,childNodes:[{nodeType:3,textContent:text}]}));
+ const editor={innerText:parts.join('\n\n'),textContent:parts.join(''),children:nodes,getClientRects:()=>[{}]};
+ const document={querySelectorAll:q=>q.includes('data-composer')?[editor]:[],querySelector:()=>null};
+ const result=runInNewContext(WEB_READONLY_INSPECT_JS.grok,{document,location:{origin:'https://grok.com',pathname:'/'}});
+ assert.equal(result.editorText,parts.join('\n'));
+});
+test('Grok paragraph editor retains an intentionally blank paragraph and inline formatting text',async()=>{
+ const {runInNewContext}=await import('node:vm');const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const children=[
+  {tagName:'P',textContent:'Alpha',childNodes:[{nodeType:1,tagName:'STRONG',childNodes:[{nodeType:3,textContent:'Alpha'}]}]},
+  {tagName:'P',textContent:'',childNodes:[{nodeType:1,tagName:'BR',childNodes:[]}]},
+  {tagName:'P',textContent:'Beta',childNodes:[{nodeType:3,textContent:'Beta'}]}
+ ];
+ const editor={innerText:'Alpha\n\n\n\nBeta',textContent:'AlphaBeta',children,getClientRects:()=>[{}]};
+ const document={querySelectorAll:s=>s.includes('data-composer')?[editor]:[],querySelector:()=>null};
+ const state=runInNewContext(WEB_READONLY_INSPECT_JS.grok,{document,location:{origin:'https://grok.com',pathname:'/'}});
+ assert.equal(state.editorText,'Alpha\n\nBeta');
+});
+
+test('Mistral ProseMirror paragraph input reconstructs exact multiline question, including a blank line',async()=>{
+ const {runInNewContext}=await import('node:vm');const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const parts=['ProjectTag: SYNTHETIC','Goal: Test project awareness','Instructions: Ask with source evidence','','Return ProjectTag only'];
+ const children=parts.map(t=>({tagName:'P',textContent:t,childNodes:t?[{nodeType:3,textContent:t}]:[{nodeType:1,tagName:'BR',childNodes:[]}]}));
+ const editor={innerText:parts.join('\n\n'),textContent:parts.join(''),children,getClientRects:()=>[{}]};
+ const document={querySelectorAll:s=>s.includes('ProseMirror')?[editor]:[],querySelector:()=>null};
+ const result=runInNewContext(WEB_READONLY_INSPECT_JS.mistral,{document,location:{origin:'https://chat.mistral.ai',pathname:'/work'}});
+ assert.equal(result.editorText,parts.join('\n'));
+});
+
+test('Mistral nested inline formatting and line breaks in a paragraph do not silently lose prompt characters',async()=>{
+ const {runInNewContext}=await import('node:vm');const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const p1={tagName:'P',textContent:'Alpha',childNodes:[{nodeType:1,tagName:'STRONG',childNodes:[{nodeType:3,textContent:'Alpha'}]}]};
+ const p2={tagName:'P',textContent:'Beta',childNodes:[{nodeType:3,textContent:'Be'},{nodeType:1,tagName:'EM',childNodes:[{nodeType:3,textContent:'ta'}]}]};
+ const editor={innerText:'Alpha\n\nBeta',textContent:'AlphaBeta',children:[p1,p2],getClientRects:()=>[{}]};
+ const doc={querySelectorAll:s=>s.includes('ProseMirror')?[editor]:[],querySelector:()=>null};
+ const result=runInNewContext(WEB_READONLY_INSPECT_JS.mistral,{document:doc,location:{origin:'https://chat.mistral.ai',pathname:'/work'}});
+ assert.equal(result.editorText,'Alpha\nBeta');
+});
+
+test('Mistral sent multiline user bubble reconstructs original paragraph whitespace for read-only recovery',async()=>{
+ const {runInNewContext}=await import('node:vm');const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const parts=['ProjectTag: SYNTHETIC','Goal: Test journal recovery','Important: Do not resend','','Return only ProjectTag'];
+ const nodes=parts.map(t=>({tagName:'P',textContent:t,childNodes:t?[{nodeType:3,textContent:t}]:[{nodeType:1,tagName:'BR',childNodes:[]}]}));
+ const wrapper={innerText:parts.join('\n\n'),textContent:parts.join(''),getClientRects:()=>[{}],querySelectorAll:s=>s==='p'?nodes:[]};
+ const editor={innerText:'',textContent:'',getClientRects:()=>[{}]};
+ const document={querySelectorAll:s=>s.includes('ProseMirror')?[editor]:s.includes('bg-basic-gray-alpha-4')?[wrapper]:[],querySelector:()=>null};
+ const result=runInNewContext(WEB_READONLY_INSPECT_JS.mistral,{document,location:{origin:'https://chat.mistral.ai',pathname:'/work/11111111-1111-4111-8111-111111111111'}});
+ assert.equal(result.lastUserText,parts.join('\n'));
+});
+
+test('Mistral sent user bubble containing no paragraph nodes retains normal plain user extraction',async()=>{
+ const {runInNewContext}=await import('node:vm');const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const wrapper={innerText:'Synthetic plain message',getClientRects:()=>[{}],querySelectorAll:s=>[]};
+ const document={querySelectorAll:s=>s.includes('bg-basic-gray-alpha-4')?[wrapper]:[],querySelector:()=>null};
+ const result=runInNewContext(WEB_READONLY_INSPECT_JS.mistral,{document,location:{origin:'https://chat.mistral.ai',pathname:'/work/11111111-1111-4111-8111-111111111111'}});
+ assert.equal(result.lastUserText,'Synthetic plain message');
+});

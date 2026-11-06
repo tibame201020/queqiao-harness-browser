@@ -50,7 +50,7 @@ test('click timeout must be UNKNOWN and never be automatically resent',async()=>
  assert.equal(r.status,'unknown');assert.equal(f.calls.filter(x=>x[0]==='click').length,1);
 });
 test('collect requires correct original conversation, question hash, final assistant text and stability',async()=>{
- const body={url:chatUrl,lastUserText:prompt,userCount:1,assistantText:'Synthetic acknowledgment',generationActive:false};
+ const body={url:chatUrl,lastUserText:prompt,userCount:1,assistantText:'Synthetic acknowledgment',generationActive:false,generationComplete:true};
  const f=stub([['tab',{tabs:[tab(chatUrl)]}],['eval',body],['eval',body]]);
  const r=await createOrcaCliTransport({...opts(f.run),settleMs:0}).collect({conversationId:conversation,conversationUrl:chatUrl,promptHash:sha(prompt)});
  assert.equal(r.status,'completed');assert.equal(r.text,'Synthetic acknowledgment');assert.equal(r.conversationId,conversation);
@@ -178,4 +178,133 @@ test('Mistral navigation never overwrites a persistent preexisting draft',async(
  const r=await createOrcaCliTransport({...opts(f.run),provider:'mistral'}).trigger({question:prompt});
  assert.deepEqual(r,{status:'not_sent',reason:'COMPOSER_NOT_EMPTY'});
  assert.equal(f.calls.filter(([c])=>['fill','keypress','click'].includes(c)).length,0);
+});
+
+test('false completion regression: text stable and Stop missing but no latest assistant terminal action stays PENDING',async()=>{
+ const value={url:chatUrl,lastUserText:prompt,userCount:1,assistantText:'Partial answer paused before resuming',generationActive:false,generationComplete:false};
+ const f=stub([['tab',{tabs:[tab(chatUrl)]}],['eval',value]]);
+ const out=await createOrcaCliTransport(opts(f.run)).collect({conversationId:conversation,conversationUrl:chatUrl,promptHash:sha(prompt)});
+ assert.equal(out.status,'pending');assert.equal(f.calls.filter(([cmd])=>cmd==='eval').length,1);
+});
+test('latest assistant terminal action must be present in both snapshots and completion proof returned',async()=>{
+ const value={url:chatUrl,lastUserText:prompt,userCount:1,assistantText:'Synthetic final answer',generationActive:false,generationComplete:true};
+ const f=stub([['tab',{tabs:[tab(chatUrl)]}],['eval',value],['eval',value]]);
+ const out=await createOrcaCliTransport(opts(f.run)).collect({conversationId:conversation,conversationUrl:chatUrl,promptHash:sha(prompt)});
+ assert.equal(out.status,'completed');assert.equal(out.completionEvidence,'latest-assistant-terminal-action-v1');
+});
+test('terminal action disappearing on second snapshot cannot be completed',async()=>{
+ const v={url:chatUrl,lastUserText:prompt,userCount:1,assistantText:'Synthetic final answer',generationActive:false,generationComplete:true};
+ const f=stub([['tab',{tabs:[tab(chatUrl)]}],['eval',v],['eval',{...v,generationComplete:false}]]);
+ assert.equal((await createOrcaCliTransport(opts(f.run)).collect({conversationId:conversation,conversationUrl:chatUrl,promptHash:sha(prompt)})).status,'pending');
+});
+
+test('ChatGPT empty ProseMirror <p><br> exposes newline innerText but is not a user draft',async()=>{
+ const {runInNewContext}=await import('node:vm');
+ const ed={innerText:'\n',textContent:'',getClientRects:()=>[{}],querySelector:q=>q==='p > br'?{}:null};
+ const document={querySelectorAll:q=>q.includes('contenteditable')?[ed]:[],querySelector:()=>null};
+ const s=runInNewContext(ORCA_READONLY_INSPECT_JS,{document,location:{origin:'https://chatgpt.com',pathname:'/'}});
+ assert.equal(s.editorText,'');
+ ed.innerText=' ';ed.textContent=' ';
+ const draft=runInNewContext(ORCA_READONLY_INSPECT_JS,{document,location:{origin:'https://chatgpt.com',pathname:'/'}});
+ assert.equal(draft.editorText,' '); // Whitespace typed by a user is still a draft.
+});
+
+test('WSL Claude stale editor ref: failed fill with verified blank composer permits one fresh-ref fill, never double-send',async()=>{
+ const home='https://claude.ai/new',old='https://claude.ai/chat/'+conversation;
+ const next='https://claude.ai/chat/22222222-2222-4222-8222-222222222222';
+ const snap=ref=>({url:home,browserPageId:pageId,refs:{[ref]:{role:'textbox',name:'Write your prompt to Claude'}}});
+ const f=stub([['tab',{tabs:[tab(old)]}],['eval',{url:old,editorCount:1,editorText:'',generationActive:false}],
+ ['goto',{ok:true}],['tab',{tabs:[tab(home)]}],['eval',{url:home,editorCount:1,editorText:'',generationActive:false}],
+ ['snapshot',snap('e1')],['fill',Error('ORCA_COMMAND_FAILED')],
+ ['eval',{url:home,editorCount:1,editorText:'',generationActive:false}],['snapshot',snap('e9')],
+ ['fill',args=>{assert.ok(args.includes('e9'));return {ok:true}}],
+ ['eval',{url:home,editorCount:1,editorText:prompt,generationActive:false}],
+ ['snapshot',{url:home,browserPageId:pageId,refs:{e9:{role:'textbox',name:'Write your prompt to Claude'},e11:{role:'button',name:'Send message'}}}],
+ ['click',{ok:true}],['tab',{tabs:[tab(next)]}],['eval',{url:next,lastUserText:prompt,userCount:1,assistantText:'OK',generationActive:false}]]);
+ const r=await createOrcaCliTransport({...opts(f.run),provider:'claude'}).trigger({question:prompt});
+ assert.equal(r.status,'submitted');assert.equal(f.calls.filter(([op])=>op==='fill').length,2);
+ assert.equal(f.calls.filter(([op])=>op==='click').length,1);
+});
+
+test('failed fill that leaves another draft never refills or submits',async()=>{
+ const home='https://claude.ai/new';const snap={url:home,browserPageId:pageId,refs:{e1:{role:'textbox',name:'Write your prompt to Claude'}}};
+ const f=stub([['tab',{tabs:[tab(home)]}],['eval',{url:home,editorCount:1,editorText:'',generationActive:false}],
+ ['snapshot',snap],['fill',Error('ORCA_COMMAND_FAILED')],['eval',{url:home,editorCount:1,editorText:'unrelated content',generationActive:false}]]);
+ const r=await createOrcaCliTransport({...opts(f.run),provider:'claude'}).trigger({question:prompt});
+ assert.deepEqual(r,{status:'not_sent',reason:'PROMPT_INTEGRITY_FAILED'});
+ assert.equal(f.calls.filter(([op])=>op==='fill').length,1);assert.equal(f.calls.filter(([op])=>op==='click').length,0);
+});
+
+test('failed fill with verified complete exact question proceeds without another fill',async()=>{
+ const home='https://claude.ai/new',next='https://claude.ai/chat/'+conversation;
+ const snap={url:home,browserPageId:pageId,refs:{e1:{role:'textbox',name:'Write your prompt to Claude'},e2:{role:'button',name:'Send message'}}};
+ const f=stub([['tab',{tabs:[tab(home)]}],['eval',{url:home,editorCount:1,editorText:'',generationActive:false}],
+ ['snapshot',snap],['fill',Error('ORCA_COMMAND_FAILED')],
+ ['eval',{url:home,editorCount:1,editorText:prompt,generationActive:false}],
+ ['eval',{url:home,editorCount:1,editorText:prompt,generationActive:false}],
+ ['snapshot',snap],['click',{ok:true}],['tab',{tabs:[tab(next)]}],
+ ['eval',{url:next,lastUserText:prompt,userCount:1,assistantText:'OK',generationActive:false}]]);
+ const r=await createOrcaCliTransport({...opts(f.run),provider:'claude'}).trigger({question:prompt});
+ assert.equal(r.status,'submitted');assert.equal(f.calls.filter(([op])=>op==='fill').length,1);
+ assert.equal(f.calls.filter(([op])=>op==='click').length,1);
+});
+
+test('native Orca runner isolates WSL bridge subprocess cwd from arbitrary Pi project cwd',async()=>{
+ const os=await import('node:os');const {EventEmitter}=await import('node:events');
+ const {createOrcaCommandRunner}=await import('./orca-cli.mjs');
+ const spawnCalls=[];
+ const spawnProcess=(exe,args,opts)=>{
+  spawnCalls.push({exe,args,opts});
+  const p=new EventEmitter();p.stdout=new EventEmitter();p.stderr=new EventEmitter();p.kill=()=>{};
+  queueMicrotask(()=>{p.stdout.emit('data',Buffer.from(JSON.stringify({ok:true,result:{tabs:[]}})));p.emit('close',0)});
+  return p;
+ };
+ const run=createOrcaCommandRunner({cli:'orca-ide',spawnProcess});
+ const original=process.cwd();
+ await run('tab',['list','--worktree','id:synthetic::test']);
+ assert.equal(process.cwd(),original,'Pi project process cwd remains unchanged');
+ assert.equal(spawnCalls[0].opts.cwd,os.homedir(),'subprocess uses stable user-local directory rather than inherited project cwd');
+ assert.equal(spawnCalls[0].opts.shell,false);
+});
+
+test('ChatGPT ProseMirror multiline fill preserves original paragraph newlines for exact prompt integrity',async()=>{
+ const {runInNewContext}=await import('node:vm');
+ const exact='ProjectTag: SYNTHETIC\nGoal: Review tests\n\nOnly return the synthetic acknowledgement';
+ const segments=['ProjectTag: SYNTHETIC','Goal: Review tests','','Only return the synthetic acknowledgement'];
+ const nodes=segments.map(text=>({tagName:'P',textContent:text,childNodes:text?[{nodeType:3,textContent:text}]:[{nodeType:1,tagName:'BR',childNodes:[]}]}));
+ const editor={innerText:segments.join('\n\n'),textContent:segments.join(''),children:nodes,getClientRects:()=>[{}],querySelector:()=>null};
+ const document={querySelectorAll:s=>s.includes('contenteditable')?[editor]:[],querySelector:()=>null};
+ const state=runInNewContext(ORCA_READONLY_INSPECT_JS,{document,location:{origin:'https://chatgpt.com',pathname:'/'}});
+ assert.notEqual(editor.innerText,exact,'real DOM innerText adds extra paragraph newlines');
+ assert.equal(state.editorText,exact,'canonical editor text must hash to the original question');
+});
+
+test('ChatGPT pre-send DOM distinguishes an enabled submit control from one still disabled after React fill',async()=>{
+ const {runInNewContext}=await import('node:vm');
+ const b={disabled:true,getAttribute:k=>({'type':'submit','aria-label':'傳送','aria-disabled':null})[k]??null,getClientRects:()=>[{}]};
+ const form={querySelectorAll:q=>q==='button[type="submit"]'?[b]:[]};
+ const editor={innerText:'Synthetic POC',textContent:'Synthetic POC',getClientRects:()=>[{}],closest:q=>q==='form'?form:null};
+ const document={querySelectorAll:q=>q.includes('contenteditable')?[editor]:[],querySelector:()=>null};
+ const inspect=()=>runInNewContext(ORCA_READONLY_INSPECT_JS,{document,location:{origin:'https://chatgpt.com',pathname:'/'}});
+ assert.equal(inspect().sendControlReady,false);
+ b.disabled=false;assert.equal(inspect().sendControlReady,true);
+});
+
+test('React disabled Send after fill must not invoke Orca click even with an exact draft',async()=>{
+ const f=stub([['tab',{tabs:[tab()]}],['eval',{url:'https://chatgpt.com/',editorText:'',generationActive:false}],
+  ['snapshot',snapshot()],['fill',{ok:true}],
+  ...Array.from({length:6},(_,i)=>['eval',{url:'https://chatgpt.com/',editorText:prompt,sendControlReady:i===5,generationActive:false}])]);
+ const r=await createOrcaCliTransport({...opts(f.run),settleMs:0}).trigger({question:prompt});
+ assert.equal(r.status,'not_sent');assert.equal(r.reason,'SEND_CONTROL_NOT_READY');assert.equal(f.calls.filter(([op])=>op==='click').length,0);
+});
+test('ChatGPT waits for two stable enabled Send observations, then clicks once only',async()=>{
+ const f=stub([['tab',{tabs:[tab()]}],['eval',{url:'https://chatgpt.com/',editorText:'',generationActive:false}],
+  ['snapshot',snapshot()],['fill',{ok:true}],
+  ['eval',{url:'https://chatgpt.com/',editorText:prompt,sendControlReady:false,generationActive:false}],
+  ['eval',{url:'https://chatgpt.com/',editorText:prompt,sendControlReady:true,generationActive:false}],
+  ['eval',{url:'https://chatgpt.com/',editorText:prompt,sendControlReady:true,generationActive:false}],
+  ['snapshot',snapshot()],['click',{clicked:true}],
+  ['tab',{tabs:[tab(chatUrl)]}],['eval',{url:chatUrl,lastUserText:prompt,userCount:1,assistantText:'',generationActive:true}]]);
+ const r=await createOrcaCliTransport({...opts(f.run),settleMs:0}).trigger({question:prompt});
+ assert.equal(r.status,'submitted');assert.equal(f.calls.filter(([op])=>op==='click').length,1);
 });

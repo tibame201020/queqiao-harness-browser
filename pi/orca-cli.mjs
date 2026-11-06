@@ -3,7 +3,9 @@
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
+import os from 'node:os';
 import fs from 'node:fs/promises';
+import {completionEvidenceExpression,COMPLETION_PROOF} from './completion-evidence.mjs';
 import {WEB_PROVIDERS,WEB_READONLY_INSPECT_JS,isAllowedPage,canonicalPageUrl,conversationIdFromUrl,validateConversation,editorRefForSnapshot,sendRefForSnapshot} from './web-providers.mjs';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -16,7 +18,11 @@ export function createOrcaCommandRunner({cli='orca-ide',spawnProcess=spawn,timeo
  return (command,args=[],signal)=>new Promise((resolve,reject)=>{
   if(!['tab','snapshot','eval','fill','click','goto','keypress'].includes(command))return reject(Error('ORCA_COMMAND_DENIED'));
   if(command==='tab'&&args[0]!=='list')return reject(Error('ORCA_TAB_MUTATION_DENIED'));
-  const child=spawnProcess(cli,[command,...args,'--json'],{stdio:['ignore','pipe','pipe'],shell:false});
+  // The managed WSL Orca bridge translates its current directory to a
+  // Windows path. Arbitrary Pi project paths (e.g. ephemeral /tmp fixtures)
+  // can fail CLI invocation before tab lookup. All targets are explicitly
+  // worktree/page pinned; the subprocess does not need Pi's project cwd.
+  const child=spawnProcess(cli,[command,...args,'--json'],{stdio:['ignore','pipe','pipe'],shell:false,cwd:os.homedir()});
   let out='',errBytes=0,settled=false,closed=false;
   const finish=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);if(error){if(!closed)child.kill('SIGTERM');reject(error)}else resolve(value)};
   const abort=()=>finish(Error('ORCA_ABORTED'));
@@ -56,9 +62,33 @@ export const ORCA_READONLY_INSPECT_JS=`(() => {
  const answer=lastAssistant?(lastAssistant.querySelector('.markdown')||lastAssistant).innerText:
   headingText(/^(?:ChatGPT 說：?|ChatGPT 说：?|ChatGPT said:?)$/i);
  const userCount=users.length||headings.filter(x=>/^(?:你說：?|你说：?|You said:?)$/i.test(x.innerText.trim())).length;
- return {url:location.origin+location.pathname,editorCount:editors.length,editorText:editor?editor.innerText:null,
+ // ProseMirror represents typed newlines as multiple <p> siblings.
+ // innerText inserts additional visual newlines and fails the exact hash
+ // even though Orca fill preserved the original text (real E2E: 198 vs 202).
+ // Reconstruct logical paragraph separators; keep actual whitespace intact.
+ const paragraphText=node=>{
+  if(!node?.childNodes)return node?.textContent??'';
+  // A bare <p><br></p> is a blank paragraph, not an extra newline.
+  if(node.childNodes.length===1&&node.childNodes[0].tagName==='BR')return '';
+  const walk=x=>x.nodeType===3?(x.textContent??''):x.tagName==='BR'?'\\n':
+   [...(x.childNodes||[])].map(walk).join('');
+  return [...node.childNodes].map(walk).join('');
+ };
+ // Actual ChatGPT send control is an enabled form submit button. Orca
+ // snapshot refs can appear during React state changes; verify live DOM too.
+ const sendForm=typeof editor?.closest==='function'?editor.closest('form'):undefined;
+ const submitButtons=sendForm?[...sendForm.querySelectorAll('button[type="submit"]')]:[];
+ const sendReady=submitButtons.filter(b=>b.getClientRects().length&&
+  /^(傳送|送出|发送|send|send message)(?:\\s.*)?$/i.test((b.getAttribute('aria-label')||'').trim())&&
+  !b.disabled&&b.getAttribute('aria-disabled')!=='true').length===1;
+ const sendControlReady=typeof editor?.closest==='function'?sendReady:undefined;
+ const isParagraphEditor=!!editor?.children?.length&&[...editor.children].every(x=>x.tagName==='P');
+ const editorText=editor?(isParagraphEditor?[...editor.children].map(paragraphText).join('\\n'):
+  (editor.innerText==='\\n'&&editor.textContent===''&&editor.querySelector('p > br')?'':editor.innerText)):null;
+ return {url:location.origin+location.pathname,editorCount:editors.length,editorText,
   lastUserText:userText,userCount,assistantText:answer,
-  generationActive:!!document.querySelector('[data-testid="stop-button"],button[aria-label="Stop generating"],button[aria-label="停止生成"]')};
+  generationActive:!!document.querySelector('[data-testid="stop-button"],button[aria-label="Stop generating"],button[aria-label="停止生成"]'),
+  generationComplete:${completionEvidenceExpression('chatgpt')},sendControlReady};
 })()`;
 
 function normalizeState(raw,provider){
@@ -149,7 +179,22 @@ export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,provider=
    const s=await snapshot(url,signal);
    const editor=editorRef(s);
    if(!editor)return {status:'not_sent',reason:'COMPOSER_UNAVAILABLE'};
-   await exec('fill',['--element',editor,'--value',question,...pinned,'--expect-url',url],signal);
+   try{await exec('fill',['--element',editor,'--value',question,...pinned,'--expect-url',url],signal)}
+   catch{
+    // Observed WSL Orca race: snapshot ref can expire after navigation. A
+    // failed fill does not prove the DOM is unchanged. Reinspect before acting.
+    // Never retry with an unknown, partial, occupied, or changed composer.
+    if(settleMs)await sleep(Math.min(500,settleMs),signal);
+    const afterFailure=await inspect(url,signal);
+    if(afterFailure.editorText!==question){
+     if(afterFailure.editorCount!==1||afterFailure.generationActive||afterFailure.editorText!=='')
+      return {status:'not_sent',reason:'PROMPT_INTEGRITY_FAILED'};
+     const refreshed=await snapshot(url,signal),freshRef=editorRef(refreshed);
+     if(!freshRef)return {status:'not_sent',reason:'COMPOSER_UNAVAILABLE'};
+     // One bounded pre-send retry with a newly verified ref. No send yet.
+     await exec('fill',['--element',freshRef,'--value',question,...pinned,'--expect-url',url],signal);
+    }
+   }
    // React/ProseMirror can commit a successful CLI fill one event-loop turn
    // after the command returns. Poll the exact draft read-only; never refill.
    for(let i=0;i<5;i++){
@@ -158,6 +203,18 @@ export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,provider=
     if(i<4)await sleep(Math.max(100,Math.min(settleMs,500)),signal);
    }
    if(state.editorText!==question)return {status:'not_sent',reason:'PROMPT_INTEGRITY_FAILED'};
+   // React can expose an accessible Send ref before the live form has
+   // committed its enabled state. Require two separate enabled observations.
+   if(provider==='chatgpt'&&typeof state.sendControlReady==='boolean'){
+    let stable=0;
+    for(let i=0;i<6;i++){
+     if(state.editorText!==question||state.generationActive)return {status:'not_sent',reason:'PROMPT_INTEGRITY_CHANGED'};
+     stable=state.sendControlReady?stable+1:0;
+     if(stable>=2)break;
+     if(i<5){await sleep(Math.max(100,Math.min(settleMs,300)),signal);state=await inspect(url,signal)}
+    }
+    if(stable<2)return {status:'not_sent',reason:'SEND_CONTROL_NOT_READY'};
+   }
    let send=null;
    if(site.sendMode==='click'){
     for(let i=0;i<5;i++){
@@ -189,11 +246,11 @@ export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,provider=
    if(canonicalPageUrl(provider,t.url)!==conversationUrl)return {status:'pending',reason:'TARGET_NOT_CURRENT'};
    const s=await inspect(t.url,signal);
    if(typeof s.lastUserText!=='string'||sha(s.lastUserText)!==promptHash)return {status:'unknown',reason:'ORIGINAL_PROMPT_MISMATCH'};
-   if(s.generationActive||typeof s.assistantText!=='string'||!s.assistantText.trim())return {status:'pending'};
+   if(s.generationActive||s.generationComplete!==true||typeof s.assistantText!=='string'||!s.assistantText.trim())return {status:'pending'};
    if(settleMs)await sleep(settleMs,signal);
    const s2=await inspect(t.url,signal);
-   if(s2.generationActive||s2.lastUserText!==s.lastUserText||s2.assistantText!==s.assistantText)return {status:'pending'};
-   return {status:'completed',conversationId,conversationUrl,text:s2.assistantText};
+   if(s2.generationActive||s2.generationComplete!==true||s2.lastUserText!==s.lastUserText||s2.assistantText!==s.assistantText)return {status:'pending'};
+   return {status:'completed',conversationId,conversationUrl,text:s2.assistantText,completionEvidence:COMPLETION_PROOF};
   }catch{return {status:'pending',reason:'COLLECT_UNAVAILABLE'}}
  }
  return {readiness,trigger,collect,recover};
