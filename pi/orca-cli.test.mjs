@@ -1,0 +1,116 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {createOrcaCliTransport,ORCA_READONLY_INSPECT_JS} from './orca-cli.mjs';
+
+const worktree='id:synthetic-repo::/synthetic/pi-usage';
+const pageId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const conversation='11111111-1111-4111-8111-111111111111';
+const chatUrl='https://chatgpt.com/c/'+conversation;
+const prompt='Synthetic Pi integration question';
+const sha=x=>createHash('sha256').update(x).digest('hex');
+const tab=(url='https://chatgpt.com/',id=pageId,worktreeId='synthetic-repo::/synthetic/pi-usage')=>({browserPageId:id,worktreeId,url});
+const snapshot=(url='https://chatgpt.com/')=>({origin:url,url,browserPageId:pageId,refs:{e1:{role:'textbox',name:'Ask ChatGPT'},e2:{role:'button',name:'Send message'}}});
+function stub(steps){const calls=[];const run=async(command,args)=>{calls.push([command,args]);const step=steps.shift();assert.equal(command,step[0]);const value=typeof step[1]==='function'?step[1](args):step[1];if(value instanceof Error)throw value;return value};return {calls,run}}
+const opts=run=>({cli:'orca-ide',worktree,pageId,run,settleMs:0});
+test('readiness pins an exact page ID and worktree without switching, closing or creating tabs',async()=>{
+ const f=stub([['tab',{tabs:[tab()]}],['snapshot',snapshot()]]);
+ const tool=createOrcaCliTransport(opts(f.run));
+ assert.equal(await tool.readiness(),true);
+ for(const [cmd,args] of f.calls){assert.ok(!['close','switch','create','goto'].includes(cmd));assert.ok(args.includes(worktree));}
+ assert.equal(f.calls.filter(x=>x[0]==='snapshot')[0][1].includes(pageId),true);
+});
+test('unknown, wrong-worktree or non-ChatGPT page fails closed before any interaction',async()=>{
+ for(const entry of [tab('https://chatgpt.com/','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),tab('https://chatgpt.com/',pageId,'wrong::/path'),tab('https://claude.ai/')]){
+  const f=stub([['tab',{tabs:[entry]}]]);const tool=createOrcaCliTransport(opts(f.run));
+  assert.equal(await tool.readiness(),false);assert.equal(f.calls.length,1);
+ }
+});
+test('trigger checks empty composer, fills exact question, verifies draft then clicks only the exact target',async()=>{
+ const f=stub([['tab',{tabs:[tab()]}],['eval',{url:'https://chatgpt.com/',editorText:'',generationActive:false}],
+  ['snapshot',snapshot()],['fill',args=>{assert.ok(args.includes(prompt));return {ok:true}}],
+  ['eval',{url:'https://chatgpt.com/',editorText:prompt,generationActive:false}],
+  ['snapshot',snapshot()],['click',{ok:true}],
+  ['tab',{tabs:[tab(chatUrl)]}],['eval',{url:chatUrl,lastUserText:prompt,userCount:1,assistantText:'',generationActive:true}]]);
+ const tool=createOrcaCliTransport(opts(f.run));
+ const r=await tool.trigger({question:prompt});
+ assert.equal(r.status,'submitted');assert.equal(r.conversationId,conversation);
+ const click=f.calls.find(x=>x[0]==='click');assert.ok(click[1].includes(pageId));assert.ok(click[1].includes('--expect-url'));
+ assert.ok(f.calls.every(x=>x[0]!=='close'&&x[0]!=='switch'&&x[0]!=='create'));
+});
+test('preflight with existing draft never modifies that tab and is NOT_SENT',async()=>{
+ const f=stub([['tab',{tabs:[tab()]}],['eval',{url:'https://chatgpt.com/',editorText:'existing draft',generationActive:false}]]);
+ const r=await createOrcaCliTransport(opts(f.run)).trigger({question:prompt});
+ assert.deepEqual(r,{status:'not_sent',reason:'DRAFT_PRESENT'});assert.equal(f.calls.length,2);
+});
+test('click timeout must be UNKNOWN and never be automatically resent',async()=>{
+ const f=stub([['tab',{tabs:[tab()]}],['eval',{url:'https://chatgpt.com/',editorText:'',generationActive:false}],
+ ['snapshot',snapshot()],['fill',{ok:true}],['eval',{url:'https://chatgpt.com/',editorText:prompt,generationActive:false}],['snapshot',snapshot()],['click',Error('browser click timed out')]]);
+ const r=await createOrcaCliTransport(opts(f.run)).trigger({question:prompt});
+ assert.equal(r.status,'unknown');assert.equal(f.calls.filter(x=>x[0]==='click').length,1);
+});
+test('collect requires correct original conversation, question hash, final assistant text and stability',async()=>{
+ const body={url:chatUrl,lastUserText:prompt,userCount:1,assistantText:'Synthetic acknowledgment',generationActive:false};
+ const f=stub([['tab',{tabs:[tab(chatUrl)]}],['eval',body],['eval',body]]);
+ const r=await createOrcaCliTransport({...opts(f.run),settleMs:0}).collect({conversationId:conversation,conversationUrl:chatUrl,promptHash:sha(prompt)});
+ assert.equal(r.status,'completed');assert.equal(r.text,'Synthetic acknowledgment');assert.equal(r.conversationId,conversation);
+});
+test('collect fails closed when final user question mismatches durable hash',async()=>{
+ const f=stub([['tab',{tabs:[tab(chatUrl)]}],['eval',{url:chatUrl,lastUserText:'Different user question',userCount:1,assistantText:'Wrong answer',generationActive:false}]]);
+ const r=await createOrcaCliTransport(opts(f.run)).collect({conversationId:conversation,conversationUrl:chatUrl,promptHash:sha(prompt)});
+ assert.equal(r.status,'unknown');
+});
+test('transport refuses active worktree selectors and invalid page IDs',()=>{
+ assert.throws(()=>createOrcaCliTransport({...opts(async()=>{}),worktree:'active'}),/WORKTREE/);
+ assert.throws(()=>createOrcaCliTransport({...opts(async()=>{}),pageId:'active'}),/PAGE_ID/);
+});
+
+test('Orca lock retains cross-process flock until the async request settles',async()=>{
+ const {EventEmitter}=await import('node:events');const {withOrcaLock}=await import('./orca-cli.mjs');
+ const events=[];let release;
+ const spawnProcess=(exe,args)=>{
+  assert.equal(exe,'flock');assert.deepEqual(args.slice(0,4),['-x','-w','90','/tmp/pi-orca-test.lock']);
+  const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();child.stdin={end(){events.push('release')}};
+  release=()=>child.stdout.emit('data','__PI_ORCA_LOCK__\n');return child;
+ };
+ const pending=withOrcaLock('/tmp/pi-orca-test.lock',async()=>{events.push('work');return 42},{spawnProcess});
+ assert.equal(events.length,0);release();assert.equal(await pending,42);assert.deepEqual(events,['work','release']);
+});
+
+
+test('read-only DOM inspection recognizes actual ChatGPT heading-based conversation turns, not only legacy data attributes',async()=>{
+ const {runInNewContext}=await import('node:vm');
+ const user={innerText:'你說：'},assistant={innerText:'ChatGPT 說：'};
+ user.parentElement={children:[user,{innerText:prompt}]};
+ assistant.parentElement={children:[assistant,{innerText:'Synthetic acknowledgment'}]};
+ const box={innerText:'',getClientRects:()=>[{}]};
+ const document={querySelectorAll(selector){
+  if(selector==='h4')return [user,assistant];
+  if(selector.includes('data-message-author-role'))return [];
+  if(selector.includes('contenteditable'))return [box];
+  return [];
+ },querySelector:()=>null};
+ const state=runInNewContext(ORCA_READONLY_INSPECT_JS,{document,location:{origin:'https://chatgpt.com',pathname:'/c/'+conversation}});
+ assert.equal(state.lastUserText,prompt);
+ assert.equal(state.assistantText,'Synthetic acknowledgment');
+ assert.equal(state.editorText,'');
+ assert.equal(state.userCount,1);
+});
+
+test('a click error after actual navigation can be reconciled by read-only verified user turn, never by another click',async()=>{
+ const f=stub([['tab',{tabs:[tab()]}],['eval',{url:'https://chatgpt.com/',editorText:'',generationActive:false}],
+ ['snapshot',snapshot()],['fill',{ok:true}],['eval',{url:'https://chatgpt.com/',editorText:prompt,generationActive:false}],
+ ['snapshot',snapshot()],['click',Error('navigation invalidated click receipt')],
+ ['tab',{tabs:[tab(chatUrl)]}],['eval',{url:chatUrl,lastUserText:prompt,userCount:1,assistantText:'Synthetic acknowledgment',generationActive:false}]]);
+ const r=await createOrcaCliTransport(opts(f.run)).trigger({question:prompt});
+ assert.equal(r.status,'submitted');assert.equal(r.conversationId,conversation);
+ assert.equal(f.calls.filter(([op])=>op==='click').length,1);
+ assert.ok(!f.calls.some(([op])=>op==='close'||op==='switch'));
+});
+
+test('read-only recover confirms only the pinned conversation with the exact prompt hash',async()=>{
+ const f=stub([['tab',{tabs:[tab(chatUrl)]}],['eval',{url:chatUrl,lastUserText:prompt,userCount:1,assistantText:'Synthetic acknowledgment',generationActive:false}]]);
+ const r=await createOrcaCliTransport(opts(f.run)).recover({promptHash:sha(prompt)});
+ assert.equal(r.status,'submitted');assert.equal(r.conversationId,conversation);
+ assert.ok(f.calls.every(([op])=>op==='tab'||op==='eval'));
+});

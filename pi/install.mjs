@@ -12,12 +12,20 @@ const destArg=args.indexOf('--dest');
 const dest=destArg>=0?args[destArg+1]:path.join(os.homedir(),'.pi','agent','extensions','queqiao-chatgpt');
 if(!path.isAbsolute(dest||''))throw Error('INVALID_INSTALL_DESTINATION');
 fs.mkdirSync(dest,{recursive:true,mode:0o700});
-const files=[['extension.mjs','index.ts'],['chatgpt-core.mjs','chatgpt-core.mjs'],['windows-runner.mjs','windows-runner.mjs']];
+const files=[['extension.mjs','index.ts'],['chatgpt-core.mjs','chatgpt-core.mjs'],['orca-cli.mjs','orca-cli.mjs']];
 for(const [src,target] of files){
  const out=path.join(dest,target);
  if(fs.existsSync(out)&&fs.lstatSync(out).isSymbolicLink())throw Error('INSTALL_SYMLINK_DENIED');
  fs.copyFileSync(path.join(here,src),out);
  fs.chmodSync(out,0o600);
+}
+// Migration from the old Browser Harness Pi transport: remove only the
+// known, tool-owned legacy module. Never remove an unrelated user file.
+const legacy=path.join(dest,'windows-runner.mjs');
+if(fs.existsSync(legacy)&&fs.lstatSync(legacy).isFile()){
+ const source=fs.readFileSync(legacy,'utf8');
+ if(source.startsWith('// WSL transport to the already installed Windows Browser Harness Runner.')&&
+    source.includes('export function createWindowsHarnessTransport'))fs.rmSync(legacy);
 }
 const pkg={name:'queqiao-pi-chatgpt-local',private:true,type:'module',dependencies:{typebox:'1.3.7'}};
 fs.writeFileSync(path.join(dest,'package.json'),JSON.stringify(pkg,null,2)+'\n',{mode:0o600});

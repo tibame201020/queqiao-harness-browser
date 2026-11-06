@@ -19,7 +19,7 @@
   "files": [
     "dist/",
     "pi/chatgpt-core.mjs",
-    "pi/windows-runner.mjs",
+    "pi/orca-cli.mjs",
     "pi/install.mjs",
     "pi/extension.mjs",
     "README.md",

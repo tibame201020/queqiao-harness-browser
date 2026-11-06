@@ -1,4 +1,4 @@
-// Pi-facing workflow adapter: the browser remains owned by the existing Harness Runner.
+// Pi-facing request/receipt state machine. Browser operations are delegated to Orca CLI.
 // Private prompts are never written to this module's local request journal.
 import {createHash} from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -29,25 +29,39 @@ export function createChatGptTool({profile,stateDir,transport,withLock=async f=>
   }
   async function readiness(signal){
     if(signal?.aborted)return false;
-    try{const x=await transport.run('status',{name:profile},{signal});
-      const cfg=x?.config;
-      return x?.status==='ok'&&cfg?.adapter==='chatgpt'&&cfg?.schedule?.type==='manual'&&
-        cfg?.adapterConfig?.project?.enabled===false&&cfg?.adapterConfig?.conversation?.newChatEachRun===true&&
-        (cfg?.browser?.connection!=='cdp'||x?.browserEndpoint?.status==='ready');
-    }catch{return false}
+    try{return await transport.readiness(signal)===true}catch{return false}
   }
   async function collect({request_id},signal){
     if(typeof request_id!=='string'||!ID.test(request_id))return {status:'INVALID_REQUEST'};
-    const record=await read(request_id);
+    let record=await read(request_id);
     if(!record)return {status:'NOT_FOUND',request_id};
+    // A CLI click may succeed yet lose its receipt during navigation. The
+    // original question hash can be reconciled from the pinned tab, read-only.
+    // Only recover explicit post-click ambiguity, never arbitrary host failures.
+    if(record.status==='UNKNOWN'&&['CLICK_OUTCOME_UNKNOWN','POST_CLICK_UNVERIFIED'].includes(record.reason)&&
+      typeof transport.recover==='function'){
+      try{
+        const observed=await withLock(()=>transport.recover({promptHash:record.prompt_hash},signal),signal);
+        if(observed?.status==='submitted'&&CONVERSATION.test(observed.conversationId||'')&&
+           validUrl(observed.conversationUrl,observed.conversationId)){
+          record={...record,status:'SUBMITTED',reason:undefined,conversation_id:observed.conversationId,
+            conversation_url:observed.conversationUrl};
+          await write(request_id,record);
+        }
+      }catch{/* Ambiguous click remains UNKNOWN, with no resend. */}
+    }
     if(!['SUBMITTED','PENDING'].includes(record.status))return simple(record);
     if(!CONVERSATION.test(record.conversation_id||'')||!validUrl(record.conversation_url,record.conversation_id))return {status:'UNKNOWN',request_id};
     return withLock(async()=>{
       try{
-        const x=await transport.run('run',{name:profile,action:'collect',args:{conversationId:record.conversation_id,conversationUrl:record.conversation_url,timeoutMs:60000}},{signal});
-        const v=x?.result;
-        if(x?.status==='ok'&&v?.status==='completed'&&v.conversationId===record.conversation_id&&validUrl(v.url,record.conversation_id)&&typeof v.text==='string'&&v.text.trim()){
-          const done={...record,status:'COMPLETED',conversation_url:v.url,answer:v.text};await write(request_id,done);return simple(done);
+        const v=await transport.collect({conversationId:record.conversation_id,conversationUrl:record.conversation_url,promptHash:record.prompt_hash},signal);
+        if(v?.status==='completed'&&v.conversationId===record.conversation_id&&
+          validUrl(v.conversationUrl,record.conversation_id)&&typeof v.text==='string'&&v.text.trim()){
+          const done={...record,status:'COMPLETED',reason:undefined,conversation_url:v.conversationUrl,answer:v.text};await write(request_id,done);return simple(done);
+        }
+        if(v?.status==='unknown'){
+          const unknown={...record,status:'UNKNOWN',reason:v.reason||'COLLECT_IDENTITY_UNKNOWN'};
+          await write(request_id,unknown);return simple(unknown);
         }
         const pending={...record,status:'PENDING'};await write(request_id,pending);return simple(pending);
       }catch{return simple({...record,status:'PENDING'})}
@@ -63,18 +77,19 @@ export function createChatGptTool({profile,stateDir,transport,withLock=async f=>
     if(prior)return prior.prompt_hash===questionHash?simple(prior):{status:'REQUEST_MISMATCH',request_id:id};
     if(!await readiness(signal))return {status:'NOT_READY',request_id:id};
     await fs.mkdir(stateDir,{recursive:true,mode:0o700});
-    // Exclusive claim precedes the first irreversible Browser Harness trigger.
+    // Exclusive claim precedes the first irreversible Orca CLI send.
     const initial={status:'DISPATCHING',request_id:id,prompt_hash:questionHash};
     try{await fs.writeFile(file(id),JSON.stringify(initial),{flag:'wx',mode:0o600})}
     catch(e){if(e.code!=='EEXIST')throw e;prior=await read(id);return prior?.prompt_hash===questionHash?simple({...prior,status:prior.status==='DISPATCHING'?'UNKNOWN':prior.status}):{status:'REQUEST_MISMATCH',request_id:id}}
     let record={...initial,status:'UNKNOWN',reason:'SEND_OUTCOME_UNKNOWN'};
     try{
-      const x=await withLock(()=>transport.run('run',{name:profile,action:'trigger',args:{prompt:question}},{signal}),signal);
-      if(x?.status==='ok'&&x?.result?.status==='triggered'&&x.result.submissionState==='submitted'&&
-        CONVERSATION.test(x.result.conversationId||'')&&validUrl(x.result.url,x.result.conversationId)){
-        record={...initial,status:'SUBMITTED',conversation_id:x.result.conversationId,conversation_url:x.result.url};
-      }else if(x?.status==='ok'&&x?.result?.submissionState==='not_sent'){
-        record={...initial,status:'NOT_SENT',reason:x.result.reason||'PRE_SEND_NOT_READY'};
+      const v=await withLock(()=>transport.trigger({question},signal),signal);
+      if(v?.status==='submitted'&&CONVERSATION.test(v.conversationId||'')&&validUrl(v.conversationUrl,v.conversationId)){
+        record={...initial,status:'SUBMITTED',conversation_id:v.conversationId,conversation_url:v.conversationUrl};
+      }else if(v?.status==='not_sent'){
+        record={...initial,status:'NOT_SENT',reason:v.reason||'PRE_SEND_NOT_READY'};
+      }else if(v?.status==='unknown'){
+        record={...initial,status:'UNKNOWN',reason:v.reason||'SEND_OUTCOME_UNKNOWN'};
       }
     }catch{/* Host error after claim cannot establish that no click occurred. */}
     await write(id,record);

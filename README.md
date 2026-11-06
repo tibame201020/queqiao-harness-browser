@@ -427,4 +427,4 @@ A local headed Chrome + CDP POC verified an authenticated ChatGPT trigger and a 
 
 ## WSL Pi ChatGPT tool (optional)
 
-An independent Pi Coding Agent can invoke ChatGPT through the **existing** Windows Browser Harness Runner using `ask_chatgpt`; the Pi Extension is not installed into the n8n 9B Worker by default. Setup, request identity, receipt recovery and live acceptance are documented in [docs/PI_CHATGPT_TOOL.md](docs/PI_CHATGPT_TOOL.md).
+An independent WSL Pi Coding Agent can invoke ChatGPT using **Orca CLI** on a specifically pinned existing Orca worktree and ChatGPT page (`ask_chatgpt`, `collect_chatgpt`). This Pi Extension no longer calls the Windows Browser Harness Runner, and is not installed into the n8n 9B Worker by default. The tool never closes, creates or switches Orca tabs. Local setup, send deduplication, read-only ambiguity recovery and live acceptance are documented in [docs/PI_CHATGPT_TOOL.md](docs/PI_CHATGPT_TOOL.md).
