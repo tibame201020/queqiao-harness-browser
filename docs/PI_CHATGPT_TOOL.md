@@ -18,6 +18,23 @@ Existing authenticated Orca pi-usage browser tabs (one per provider)
 
 The original `chatgpt-core.mjs` remains a minimal compatibility re-export. The old `createChatGptTool` factory is an alias to the shared `createWebAskTool({provider:'chatgpt'})`; historical ChatGPT local receipts retain their namespace. This extension **does not use Browser Harness**, change browser profiles, or install into n8n's separate 9B Workers, which still launch with `--no-extensions`.
 
+## Interactive Pi Slash Commands (Windows and WSL)
+
+The local extension registers **four explicit human commands** in addition to all 16 model-callable tools. Native Pi 0.85.1 and 1.5.0 expose extension commands in the interactive slash-completion list and through RPC `get_commands`:
+
+| Human command | Existing Core route | Read-only later collection |
+|---|---|---|
+| `/ask-gpt What is unit testing?` | `ask_chatgpt` | `/ask-gpt --collect <request_id>` |
+| `/ask-claude What is unit testing?` | `ask_claude` | `/ask-claude --collect <request_id>` |
+| `/ask-grok What is unit testing?` | `ask_grok` | `/ask-grok --collect <request_id>` |
+| `/ask-mistral What is unit testing?` | `ask_mistral` | `/ask-mistral --collect <request_id>` |
+
+The command calls `createWebAskTool(...).ask()` directly, **not** another LLM turn and not another Orca implementation. If the result is `PENDING`, it attempts up to eight bounded **read-only** `collect()` calls. `UNKNOWN` is only reconciled for the two explicitly recoverable click outcomes, never blindly resent. If still pending or unknown, the user-visible result includes the original receipt ID and a `--collect` command. `--collect` never calls Ask. Do not repeat a question expecting a new send: the deterministic journal deduplicates the exact same question per provider/platform namespace.
+
+The result is displayed as a Pi custom message with `triggerTurn:false`, avoiding an extra model call. This custom message is stored in the Pi session and may participate in later LLM context; extremely large answers are capped to 12,000 characters for display (the full answer remains in the private receipt journal). Never send secrets or sensitive personal data through this Web Ask extension. Use `/reload` or restart Pi after installing or updating the extension, then type `/ask-` to see the registered completions.
+
+**Verified on actual installed Pi CLIs (2026-11-06):** The Pi RPC `get_commands` response included all four slash commands on both WSL Pi and Windows Pi 1.5.0. A real RPC `prompt` containing `/ask-claude <synthetic question>` on WSL and `/ask-grok <synthetic question>` on Windows each reached the authenticated Web UI, produced `COMPLETED` plus an exact synthetic ACK, and displayed a Pi custom message (`triggerTurn:false`) with exit code 0. Follow-up RPC `/ask-claude --collect <existing receipt>` and `/ask-grok --collect <existing receipt>` also produced the original ACK without another Ask. Direct command execution of `/ask-gpt` and `/ask-mistral` was covered by eight synthetic command-unit tests and runtime registration checks but not an additional external send in this slash-command change; earlier model-tool E2Es cover their Orca transports. No release or merge was performed.
+
 ## Pi tool contracts
 
 | Provider | Ask | Collect | Receipt | Readiness |
@@ -84,7 +101,7 @@ Site DOM may change; new upstream selectors require fresh verification rather th
 
 ## Windows Pi (Queqiao `pc-worker`) local installation
 
-The same extension is installed into **Windows Pi** separately, without npm publication or GitHub Release. Windows Pi has its own user-local `~/.pi/agent/extensions/queqiao-chatgpt` directory and local configuration; it does not load WSL Pi files automatically. The local installer detects Windows (`cmd.exe` for the fixed npm install command) and copies the same runtime modules. The Windows Pi process invokes the installed **native Windows Orca CLI executable** rather than `orca-ide` from WSL.
+The same extension is installed into **Windows Pi** separately, without npm publication or GitHub Release. Windows Pi has its own user-local `~/.pi/agent/extensions/queqiao-chatgpt` directory and local configuration; it does not load WSL Pi files automatically. The local installer detects Windows (`cmd.exe` for the fixed npm install command) and copies the same runtime modules, including `commands.mjs`. The Windows Pi process invokes the installed **native Windows Orca CLI executable** rather than `orca-ide` from WSL.
 
 Use a user-local Windows config under `%USERPROFILE%\.config\queqiao\pi-chatgpt.json`. Set `cli` to the local native Orca CLI `.exe`, `stateDir` to a private Windows user directory, and `providers[provider]` to the existing `pi-usage` worktree and exact provider page IDs. Never commit this config or real IDs. Windows filesystem permissions use inherited user-profile ACLs rather than POSIX `0600` bits.
 

@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import {createWebAskTool} from './web-ask-core.mjs';
 import {createOrcaCliTransport,withOrcaLock} from './orca-cli.mjs';
 import {WEB_PROVIDERS} from './web-providers.mjs';
+import {registerWebAskCommands} from './commands.mjs';
 
 const providers=Object.keys(WEB_PROVIDERS);
 const configPath=()=>process.env.QUEQIAO_PI_CHATGPT_CONFIG||path.join(os.homedir(),'.config','queqiao','pi-chatgpt.json');
@@ -33,6 +34,7 @@ export default function(pi){
    withLock:(fn,signal)=>withOrcaLock(cfg.lockFile,fn,{signal})});
   clients.set(provider,client);return client;
  };
+ registerWebAskCommands(pi,{getClient});
  const askParameters=Type.Object({question:Type.String({minLength:1,maxLength:4000}),request_id:Type.Optional(Type.String({minLength:8,maxLength:96}))},{additionalProperties:false});
  const requestParameters=Type.Object({request_id:Type.String({minLength:8,maxLength:96})},{additionalProperties:false});
  const emptyParameters=Type.Object({},{additionalProperties:false});

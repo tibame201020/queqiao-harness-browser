@@ -6,8 +6,9 @@ import os from 'node:os';
 import registerPi from './extension.mjs';
 
 test('Pi 0.85 tool interface exposes four explicit providers, no Orca control or role arguments',()=>{
- const registered=new Map();registerPi({registerTool:t=>registered.set(t.name,t)});
+ const registered=new Map(),commands=new Map();registerPi({registerTool:t=>registered.set(t.name,t),registerCommand:(name,options)=>commands.set(name,options)});
  assert.deepEqual([...registered.keys()],['ask_chatgpt','collect_chatgpt','chatgpt_status','chatgpt_readiness','ask_claude','collect_claude','claude_status','claude_readiness','ask_grok','collect_grok','grok_status','grok_readiness','ask_mistral','collect_mistral','mistral_status','mistral_readiness']);
+ assert.deepEqual([...commands.keys()],['ask-gpt','ask-claude','ask-grok','ask-mistral']);
  for(const t of registered.values())assert.equal(typeof t.execute,'function');
  for(const name of ['chatgpt','claude','grok','mistral'])assert.deepEqual(Object.keys(registered.get(`ask_${name}`).parameters.properties).sort(),['question','request_id']);
  const ask=registered.get('ask_chatgpt');assert.deepEqual(Object.keys(ask.parameters.properties).sort(),['question','request_id']);
@@ -21,7 +22,7 @@ test('Pi read status tool works without browser invocation or user profile conte
    const config=path.join(dir,'config.json');
    await fs.writeFile(config,JSON.stringify({profile:'synthetic-pi',worktree:'id:synthetic::/example',pageId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',stateDir:path.join(dir,'state'),lockFile:path.join(dir,'orca.lock')}));
    process.env.QUEQIAO_PI_CHATGPT_CONFIG=config;
-   const registered=new Map();registerPi({registerTool:t=>registered.set(t.name,t)});
+   const registered=new Map(),commands=new Map();registerPi({registerTool:t=>registered.set(t.name,t),registerCommand:(name,options)=>commands.set(name,options)});
    const r=await registered.get('chatgpt_status').execute('synthetic',{request_id:'test-missing-1'});
    assert.equal(JSON.parse(r.content[0].text).status,'NOT_FOUND');
  }finally{if(old===undefined)delete process.env.QUEQIAO_PI_CHATGPT_CONFIG;else process.env.QUEQIAO_PI_CHATGPT_CONFIG=old;await fs.rm(dir,{recursive:true,force:true})}
@@ -35,7 +36,7 @@ test('four public provider status tools use one local config but distinct journa
   const cfg=path.join(dir,'config.json');
   await fs.writeFile(cfg,JSON.stringify({profile:'synthetic-multi',stateDir:path.join(dir,'state'),lockFile:path.join(dir,'orca.lock'),providers}));
   process.env.QUEQIAO_PI_CHATGPT_CONFIG=cfg;
-  const map=new Map();registerPi({registerTool:t=>map.set(t.name,t)});
+  const map=new Map(),commands=new Map();registerPi({registerTool:t=>map.set(t.name,t),registerCommand:(name,options)=>commands.set(name,options)});
   for(const name of Object.keys(providers)){
    const r=await map.get(`${name}_status`).execute('test',{request_id:'synthetic-status-001'});
    assert.equal(JSON.parse(r.content[0].text).status,'NOT_FOUND');

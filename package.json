@@ -22,6 +22,7 @@
     "pi/web-ask-core.mjs",
     "pi/orca-cli.mjs",
     "pi/web-providers.mjs",
+    "pi/commands.mjs",
     "pi/install.mjs",
     "pi/install-platform.mjs",
     "pi/extension.mjs",
