@@ -65,11 +65,11 @@ export const WEB_READONLY_INSPECT_JS=Object.fromEntries(Object.entries(siteDom).
  const latestUser=text(${JSON.stringify(provider)}==='grok'?userRoot?.querySelector('.response-content-markdown')??null:userRoot);
  const latestAssistant=text(${JSON.stringify(provider)}==='claude'?(answerRoot?.querySelector('.prose')??null):
   ${JSON.stringify(provider)}==='grok'?(answerRoot?.querySelector('.response-content-markdown')??null):answerRoot);
- // Claude ProseMirror wraps each logical input line in a <p>. innerText
+ // Claude and Grok wrap each logical editor line in a <p>. innerText
  // inserts visual blank lines between paragraphs, even when the original
  // exact prompt contained one newline. Reconstruct from DOM, not a broad
  // whitespace-replacement that could silently change the user's question.
- const isClaudeParagraphs=${JSON.stringify(provider)}==='claude'&&
+ const isParagraphEditor=['claude','grok'].includes(${JSON.stringify(provider)})&&
   !!editor?.children?.length&&[...editor.children].every(x=>x.tagName==='P');
  const paragraphText=node=>{
   if(!node?.childNodes)return node?.textContent??'';
@@ -78,7 +78,7 @@ export const WEB_READONLY_INSPECT_JS=Object.fromEntries(Object.entries(siteDom).
    [...(x.childNodes||[])].map(walk).join('');
   return [...node.childNodes].map(walk).join('');
  };
- const editorText=editor?(isClaudeParagraphs?[...editor.children].map(paragraphText).join('\\n'):
+ const editorText=editor?(isParagraphEditor?[...editor.children].map(paragraphText).join('\\n'):
   (editor.innerText||editor.value||'').trim()):null;
  return {url:location.origin+location.pathname,editorCount:editors.length,editorText,
   lastUserText:latestUser,userCount:userNodes.length,assistantText:latestAssistant,

@@ -87,3 +87,26 @@ test('Claude paragraph canonicalization preserves intentionally empty paragraph 
  const result=runInNewContext(WEB_READONLY_INSPECT_JS.claude,{document,location:{origin:'https://claude.ai',pathname:'/new'}});
  assert.equal(result.editorText,'Alpha\n\nBeta');
 });
+
+test('Grok paragraph editor preserves exact multiline question instead of extra visual innerText blank lines', async()=>{
+ const {runInNewContext}=await import('node:vm');
+ const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const parts=['ProjectTag: SYNTHETIC','Goal: Evaluate a toy paper trading strategy','Important: This is only a synthetic fixture','Ask for the ProjectTag from the file'];
+ const nodes=parts.map(text=>({tagName:'P',textContent:text,childNodes:[{nodeType:3,textContent:text}]}));
+ const editor={innerText:parts.join('\n\n'),textContent:parts.join(''),children:nodes,getClientRects:()=>[{}]};
+ const document={querySelectorAll:q=>q.includes('data-composer')?[editor]:[],querySelector:()=>null};
+ const result=runInNewContext(WEB_READONLY_INSPECT_JS.grok,{document,location:{origin:'https://grok.com',pathname:'/'}});
+ assert.equal(result.editorText,parts.join('\n'));
+});
+test('Grok paragraph editor retains an intentionally blank paragraph and inline formatting text',async()=>{
+ const {runInNewContext}=await import('node:vm');const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const children=[
+  {tagName:'P',textContent:'Alpha',childNodes:[{nodeType:1,tagName:'STRONG',childNodes:[{nodeType:3,textContent:'Alpha'}]}]},
+  {tagName:'P',textContent:'',childNodes:[{nodeType:1,tagName:'BR',childNodes:[]}]},
+  {tagName:'P',textContent:'Beta',childNodes:[{nodeType:3,textContent:'Beta'}]}
+ ];
+ const editor={innerText:'Alpha\n\n\n\nBeta',textContent:'AlphaBeta',children,getClientRects:()=>[{}]};
+ const document={querySelectorAll:s=>s.includes('data-composer')?[editor]:[],querySelector:()=>null};
+ const state=runInNewContext(WEB_READONLY_INSPECT_JS.grok,{document,location:{origin:'https://grok.com',pathname:'/'}});
+ assert.equal(state.editorText,'Alpha\n\nBeta');
+});
