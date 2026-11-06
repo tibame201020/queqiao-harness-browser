@@ -65,19 +65,6 @@ test('transport refuses active worktree selectors and invalid page IDs',()=>{
  assert.throws(()=>createOrcaCliTransport({...opts(async()=>{}),pageId:'active'}),/PAGE_ID/);
 });
 
-test('Orca lock retains cross-process flock until the async request settles',async()=>{
- const {EventEmitter}=await import('node:events');const {withOrcaLock}=await import('./orca-cli.mjs');
- const events=[];let release;
- const spawnProcess=(exe,args)=>{
-  assert.equal(exe,'flock');assert.deepEqual(args.slice(0,4),['-x','-w','90','/tmp/pi-orca-test.lock']);
-  const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();child.stdin={end(){events.push('release')}};
-  release=()=>child.stdout.emit('data','__PI_ORCA_LOCK__\n');return child;
- };
- const pending=withOrcaLock('/tmp/pi-orca-test.lock',async()=>{events.push('work');return 42},{spawnProcess});
- assert.equal(events.length,0);release();assert.equal(await pending,42);assert.deepEqual(events,['work','release']);
-});
-
-
 test('read-only DOM inspection recognizes actual ChatGPT heading-based conversation turns, not only legacy data attributes',async()=>{
  const {runInNewContext}=await import('node:vm');
  const user={innerText:'你說：'},assistant={innerText:'ChatGPT 說：'};
@@ -148,4 +135,47 @@ test('Mistral uses a verified generic editable ref and submits once with Enter, 
   ['tab',{tabs:[tab(conv)]}],['eval',{url:conv,lastUserText:prompt,userCount:1,assistantText:'ACK',generationActive:false}]]);
  const x=await createOrcaCliTransport({...opts(f.run),provider:'mistral'}).trigger({question:prompt});
  assert.equal(x.status,'submitted');assert.ok(f.calls.every(([cmd])=>!['click','close','switch','create'].includes(cmd)));
+});
+
+test('Windows Claude editor may asynchronously reflect fill; poll the exact draft before permitting one send',async()=>{
+ const home='https://claude.ai/new';const convo='https://claude.ai/chat/'+conversation;
+ const snap=send=>({url:home,browserPageId:pageId,refs:{e1:{role:'textbox',name:'Write your prompt to Claude'},...(send?{e2:{role:'button',name:'Send message'}}:{})}});
+ const f=stub([['tab',{tabs:[tab(home)]}],['eval',{url:home,editorCount:1,editorText:'',generationActive:false}],
+ ['snapshot',snap(false)],['fill',{ok:true}],
+ ['eval',{url:home,editorCount:1,editorText:'',generationActive:false}],
+ ['eval',{url:home,editorCount:1,editorText:prompt,generationActive:false}],
+ ['snapshot',snap(true)],['click',{ok:true}],
+ ['tab',{tabs:[tab(convo)]}],['eval',{url:convo,lastUserText:prompt,userCount:1,assistantText:'ACK',generationActive:false}]]);
+ const result=await createOrcaCliTransport({...opts(f.run),provider:'claude'}).trigger({question:prompt});
+ assert.equal(result.status,'submitted');assert.equal(f.calls.filter(([cmd])=>cmd==='fill').length,1);assert.equal(f.calls.filter(([cmd])=>cmd==='click').length,1);
+});
+test('persistent post-fill integrity mismatch remains NOT_SENT and never clicks',async()=>{
+ const home='https://claude.ai/new';const snap={url:home,browserPageId:pageId,refs:{e1:{role:'textbox',name:'Write your prompt to Claude'}}};
+ const f=stub([['tab',{tabs:[tab(home)]}],['eval',{url:home,editorCount:1,editorText:'',generationActive:false}],['snapshot',snap],['fill',{ok:true}],
+ ...Array.from({length:5},()=>['eval',{url:home,editorCount:1,editorText:'different draft',generationActive:false}])]);
+ const r=await createOrcaCliTransport({...opts(f.run),provider:'claude'}).trigger({question:prompt});
+ assert.equal(r.status,'not_sent');assert.equal(r.reason,'PROMPT_INTEGRITY_FAILED');assert.equal(f.calls.filter(([op])=>op==='click').length,0);
+});
+
+test('Windows Mistral navigation to fresh chat waits for empty composer before filling, no duplicate navigation',async()=>{
+ const home='https://chat.mistral.ai/work',existing='https://chat.mistral.ai/work/'+conversation;
+ const otherId='22222222-2222-4222-8222-222222222222',next='https://chat.mistral.ai/work/'+otherId;
+ const snap={url:home,browserPageId:pageId,refs:{e8:{role:'generic',name:''}},snapshot:'- generic [ref=e8] editable [contenteditable]:'};
+ const f=stub([['tab',{tabs:[tab(existing)]}],['eval',{url:existing,editorCount:1,editorText:'',generationActive:false}],
+ ['goto',{ok:true}],['tab',{tabs:[tab(home)]}],
+ ['eval',{url:home,editorCount:0,editorText:null,generationActive:false}],
+ ['eval',{url:home,editorCount:1,editorText:'',generationActive:false}],
+ ['snapshot',snap],['fill',{ok:true}],['eval',{url:home,editorCount:1,editorText:prompt,generationActive:false}],
+ ['keypress',{ok:true}],['tab',{tabs:[tab(next)]}],['eval',{url:next,lastUserText:prompt,userCount:1,assistantText:'ACK',generationActive:false}]]);
+ const r=await createOrcaCliTransport({...opts(f.run),provider:'mistral'}).trigger({question:prompt});
+ assert.equal(r.status,'submitted');assert.equal(f.calls.filter(([c])=>c==='goto').length,1);
+ assert.equal(f.calls.filter(([c])=>c==='keypress').length,1);
+});
+test('Mistral navigation never overwrites a persistent preexisting draft',async()=>{
+ const home='https://chat.mistral.ai/work',existing='https://chat.mistral.ai/work/'+conversation;
+ const f=stub([['tab',{tabs:[tab(existing)]}],['eval',{url:existing,editorCount:1,editorText:'',generationActive:false}],
+ ['goto',{ok:true}],['tab',{tabs:[tab(home)]}],...Array.from({length:5},()=>['eval',{url:home,editorCount:1,editorText:'preexisting draft',generationActive:false}])]);
+ const r=await createOrcaCliTransport({...opts(f.run),provider:'mistral'}).trigger({question:prompt});
+ assert.deepEqual(r,{status:'not_sent',reason:'COMPOSER_NOT_EMPTY'});
+ assert.equal(f.calls.filter(([c])=>['fill','keypress','click'].includes(c)).length,0);
 });

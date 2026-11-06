@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFileSync} from 'node:child_process';
+import {npmInstallCommand} from './install-platform.mjs';
 const here=path.dirname(fileURLToPath(import.meta.url));
 const args=process.argv.slice(2);
 if(args.some(x=>!['--dest','--skip-deps'].includes(x)&&args[args.indexOf('--dest')+1]!==x))throw Error('Usage: node pi/install.mjs [--dest /absolute/path] [--skip-deps]');
@@ -29,5 +30,5 @@ if(fs.existsSync(legacy)&&fs.lstatSync(legacy).isFile()){
 }
 const pkg={name:'queqiao-pi-chatgpt-local',private:true,type:'module',dependencies:{typebox:'1.3.7'}};
 fs.writeFileSync(path.join(dest,'package.json'),JSON.stringify(pkg,null,2)+'\n',{mode:0o600});
-if(!args.includes('--skip-deps'))execFileSync('npm',['install','--ignore-scripts','--omit=dev','--no-audit','--no-fund'],{cwd:dest,stdio:'ignore',timeout:120000});
+if(!args.includes('--skip-deps')){const command=npmInstallCommand();execFileSync(command.exe,command.args,{cwd:dest,stdio:'ignore',timeout:120000})}
 console.log(JSON.stringify({status:'PI_CHATGPT_EXTENSION_INSTALLED',destination:dest,dependencyInstalled:!args.includes('--skip-deps')}));

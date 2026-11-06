@@ -3,6 +3,7 @@
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import {WEB_PROVIDERS,WEB_READONLY_INSPECT_JS,isAllowedPage,canonicalPageUrl,conversationIdFromUrl,validateConversation,editorRefForSnapshot,sendRefForSnapshot} from './web-providers.mjs';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -136,14 +137,26 @@ export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,provider=
     await exec('goto',['--url',site.home,...pinned,'--expect-url',url],signal);
     t=await tab(signal);url=t.url;
     if(url!==site.home)return {status:'not_sent',reason:'NEW_CHAT_UNAVAILABLE'};
-    state=await inspect(url,signal);
-    if(state.editorText?.trim()||state.generationActive||state.editorCount!==1)return {status:'not_sent',reason:'COMPOSER_NOT_EMPTY'};
+    // Navigation can land on the home URL before its composer is hydrated.
+    // Wait for one visibly empty editor; never overwrite a persistent draft.
+    for(let i=0;i<5;i++){
+     state=await inspect(url,signal);
+     if(state.editorCount===1&&state.editorText===''&&!state.generationActive)break;
+     if(i<4)await sleep(Math.max(100,Math.min(settleMs,500)),signal);
+    }
+    if(state.editorText!==''||state.generationActive||state.editorCount!==1)return {status:'not_sent',reason:'COMPOSER_NOT_EMPTY'};
    }
    const s=await snapshot(url,signal);
    const editor=editorRef(s);
    if(!editor)return {status:'not_sent',reason:'COMPOSER_UNAVAILABLE'};
    await exec('fill',['--element',editor,'--value',question,...pinned,'--expect-url',url],signal);
-   state=await inspect(url,signal);
+   // React/ProseMirror can commit a successful CLI fill one event-loop turn
+   // after the command returns. Poll the exact draft read-only; never refill.
+   for(let i=0;i<5;i++){
+    state=await inspect(url,signal);
+    if(state.editorText===question)break;
+    if(i<4)await sleep(Math.max(100,Math.min(settleMs,500)),signal);
+   }
    if(state.editorText!==question)return {status:'not_sent',reason:'PROMPT_INTEGRITY_FAILED'};
    let send=null;
    if(site.sendMode==='click'){
@@ -186,25 +199,26 @@ export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,provider=
  return {readiness,trigger,collect,recover};
 }
 
-// Per-Pi Orca transport lock. We never use the Browser Harness shared lock:
-// different browser engines have independent process ownership.
-export function withOrcaLock(lockFile,fn,{spawnProcess=spawn,signal}={}){
- if(!path.isAbsolute(lockFile||''))throw Error('INVALID_ORCA_LOCK');
- return new Promise((resolve,reject)=>{
-  const child=spawnProcess('flock',['-x','-w','90',lockFile,'sh','-c','echo __PI_ORCA_LOCK__; cat >/dev/null'],{stdio:['pipe','pipe','pipe']});
-  let ready=false,done=false;
-  const timer=setTimeout(()=>finish(Error('ORCA_LOCK_TIMEOUT')),95000);
-  const onAbort=()=>{if(!ready)finish(Error('ORCA_LOCK_ABORTED'))};
-  function finish(error,value){if(done)return;done=true;clearTimeout(timer);signal?.removeEventListener('abort',onAbort);child.stdin.end();if(error)reject(error);else resolve(value)}
-  signal?.addEventListener('abort',onAbort,{once:true});
-  child.stdout.on('data',chunk=>{
-   if(ready||!String(chunk).includes('__PI_ORCA_LOCK__'))return;
-   ready=true;
-   if(signal?.aborted)return onAbort();
-   Promise.resolve().then(fn).then(v=>finish(null,v),e=>finish(e));
-  });
-  child.on('error',()=>finish(Error('ORCA_LOCK_UNAVAILABLE')));
-  child.on('exit',()=>{if(!ready)finish(Error('ORCA_LOCK_UNAVAILABLE'))});
-  if(signal?.aborted)onAbort();
- });
+// Cross-platform, cross-process atomic directory lock. Windows native Pi and
+// WSL Pi can share the same physical NTFS directory through their respective
+// OS paths. No automatic stale-lock deletion: a crash cannot authorize a
+// second send; stale locks require explicit operator reconciliation.
+export async function withOrcaLock(lockDirectory,fn,{signal,timeoutMs=90000,pollMs=150}={}){
+ if(!path.isAbsolute(lockDirectory||''))throw Error('INVALID_ORCA_LOCK');
+ if(!Number.isFinite(timeoutMs)||timeoutMs<0||!Number.isFinite(pollMs)||pollMs<=0)throw Error('INVALID_ORCA_LOCK_OPTIONS');
+ if(signal?.aborted)throw Error('ORCA_LOCK_ABORTED');
+ await fs.mkdir(path.dirname(lockDirectory),{recursive:true});
+ const start=Date.now();
+ while(true){
+  if(signal?.aborted)throw Error('ORCA_LOCK_ABORTED');
+  try{await fs.mkdir(lockDirectory);break}
+  catch(e){
+   if(e.code!=='EEXIST')throw Error('ORCA_LOCK_UNAVAILABLE');
+   if(Date.now()-start>=timeoutMs)throw Error('ORCA_LOCK_TIMEOUT');
+   try{await sleep(Math.min(pollMs,Math.max(1,timeoutMs-(Date.now()-start))),signal)}
+   catch{throw Error('ORCA_LOCK_ABORTED')}
+  }
+ }
+ try{return await fn()}
+ finally{await fs.rmdir(lockDirectory)}
 }

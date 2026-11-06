@@ -23,6 +23,7 @@
     "pi/orca-cli.mjs",
     "pi/web-providers.mjs",
     "pi/install.mjs",
+    "pi/install-platform.mjs",
     "pi/extension.mjs",
     "README.md",
     "LICENSE",
