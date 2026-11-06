@@ -1,6 +1,8 @@
 # Pi Web Ask Final E2E — Round 2/4: Claude (2026-11-06)
 
-**Overall result: BLOCKED — preexisting draft on the dedicated pinned Claude browser page.** Neither Windows nor WSL has a confirmed forced-consultation completion in this round. Do not carry forward an earlier prototype's Claude PASS. No code modification, browser send, tab creation, tab closure, release or merge was performed.
+**Original run result: BLOCKED — preexisting draft on the dedicated pinned Claude browser page.** Neither Windows nor WSL has a confirmed forced-consultation completion in this round. Do not carry forward an earlier prototype's Claude PASS. No code modification, browser send, tab creation, tab closure, release or merge was performed.
+
+**Follow-up (same date):** After explicit user authorization to clear that draft, targeted TDD fixed an additional Claude ProseMirror multiline false-negative and the actual Windows/WSL Pi both passed strict context-aware forced consultation with durable `COMPLETED` evidence. The original BLOCKED rows below remain historically accurate. See [PI_R2_CLAUDE_AUTHORIZED_RETRO_20261106.md](PI_R2_CLAUDE_AUTHORIZED_RETRO_20261106.md) for all passing and failing run IDs and the final accepted result.
 
 ## Scope and setup
 

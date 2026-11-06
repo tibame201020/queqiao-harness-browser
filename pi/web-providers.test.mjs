@@ -62,3 +62,28 @@ test('Mistral original user text comes from the message bubble rather than an ab
  const state=runInNewContext(WEB_READONLY_INSPECT_JS.mistral,{document,location:{origin:'https://chat.mistral.ai',pathname:'/work/12345678-1234-4234-8234-123456789abc'}});
  assert.equal(state.lastUserText,'EXACT_MISTRAL_QUESTION');assert.equal(state.assistantText,'EXACT_MISTRAL_ACK');
 });
+
+test('Claude editor paragraph DOM reconstructs exact multi-line prompt without visual innerText extra newlines', async()=>{
+ const {runInNewContext}=await import('node:vm');
+ const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const parts=['ProjectTag: SYNTHETIC','Goal: Inspect the toy strategy','Acceptance: Return only test ACK','No real credentials or user data'];
+ const exact=parts.join('\n');
+ const nodes=parts.map(x=>({tagName:'P',textContent:x,childNodes:[{nodeType:3,textContent:x}]}));
+ const editor={innerText:parts.join('\n\n'),textContent:parts.join(''),children:nodes,getClientRects:()=>[{}]};
+ const doc={querySelectorAll:s=>s.includes('chat-input')?[editor]:[],querySelector:()=>null};
+ const value=runInNewContext(WEB_READONLY_INSPECT_JS.claude,{document:doc,location:{origin:'https://claude.ai',pathname:'/new'}});
+ assert.equal(value.editorText,exact,'logical paragraph separators must match exact original question');
+});
+
+test('Claude paragraph canonicalization preserves intentionally empty paragraph and nested inline text', async()=>{
+ const {runInNewContext}=await import('node:vm');const {WEB_READONLY_INSPECT_JS}=await import('./web-providers.mjs');
+ const children=[
+  {tagName:'P',textContent:'Alpha',childNodes:[{nodeType:1,tagName:'STRONG',childNodes:[{nodeType:3,textContent:'Alpha'}]}]},
+  {tagName:'P',textContent:'',childNodes:[{nodeType:1,tagName:'BR',childNodes:[]}]},
+  {tagName:'P',textContent:'Beta',childNodes:[{nodeType:3,textContent:'Beta'}]}
+ ];
+ const editor={innerText:'Alpha\n\n\n\nBeta',textContent:'AlphaBeta',children,getClientRects:()=>[{}]};
+ const document={querySelectorAll:s=>s.includes('chat-input')?[editor]:[],querySelector:()=>null};
+ const result=runInNewContext(WEB_READONLY_INSPECT_JS.claude,{document,location:{origin:'https://claude.ai',pathname:'/new'}});
+ assert.equal(result.editorText,'Alpha\n\nBeta');
+});
