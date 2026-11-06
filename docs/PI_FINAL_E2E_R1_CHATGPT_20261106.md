@@ -42,3 +42,7 @@
 Root-cause investigation of the Windows post-click outcome and reliable small-model stop/reconciliation behavior is required. Do not blindly retry the existing `UNKNOWN` request. No assumption is made that the second Ask actually reached the Web page.
 
 Rounds 2–4 (Claude, Grok, Mistral) are **NOT_ATTEMPTED in this final acceptance cycle**. They should be performed separately and should not inherit a PASS verdict from earlier prototype runs.
+
+## Follow-up Retro result (same date; original failure retained)
+
+The initial Windows FAIL recorded above remains historically accurate. Targeted TDD mitigations and four new forced-consultation E2Es are documented in [PI_R1_WINDOWS_FORCED_CONSULT_RETRO_20261106.md](PI_R1_WINDOWS_FORCED_CONSULT_RETRO_20261106.md). The observed Windows success path has now been reverified three times on fresh synthetic requests, WSL twice. This does **not** erase the original `UNKNOWN` record or establish a definitive cause for the intermittent underlying Click no-op. The same-prompt altered-question duplicate-send path is now blocked in the native Pi extension.

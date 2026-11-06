@@ -74,13 +74,21 @@ export const ORCA_READONLY_INSPECT_JS=`(() => {
    [...(x.childNodes||[])].map(walk).join('');
   return [...node.childNodes].map(walk).join('');
  };
+ // Actual ChatGPT send control is an enabled form submit button. Orca
+ // snapshot refs can appear during React state changes; verify live DOM too.
+ const sendForm=typeof editor?.closest==='function'?editor.closest('form'):undefined;
+ const submitButtons=sendForm?[...sendForm.querySelectorAll('button[type="submit"]')]:[];
+ const sendReady=submitButtons.filter(b=>b.getClientRects().length&&
+  /^(傳送|送出|发送|send|send message)(?:\\s.*)?$/i.test((b.getAttribute('aria-label')||'').trim())&&
+  !b.disabled&&b.getAttribute('aria-disabled')!=='true').length===1;
+ const sendControlReady=typeof editor?.closest==='function'?sendReady:undefined;
  const isParagraphEditor=!!editor?.children?.length&&[...editor.children].every(x=>x.tagName==='P');
  const editorText=editor?(isParagraphEditor?[...editor.children].map(paragraphText).join('\\n'):
   (editor.innerText==='\\n'&&editor.textContent===''&&editor.querySelector('p > br')?'':editor.innerText)):null;
  return {url:location.origin+location.pathname,editorCount:editors.length,editorText,
   lastUserText:userText,userCount,assistantText:answer,
   generationActive:!!document.querySelector('[data-testid="stop-button"],button[aria-label="Stop generating"],button[aria-label="停止生成"]'),
-  generationComplete:${completionEvidenceExpression('chatgpt')}};
+  generationComplete:${completionEvidenceExpression('chatgpt')},sendControlReady};
 })()`;
 
 function normalizeState(raw,provider){
@@ -195,6 +203,18 @@ export function createOrcaCliTransport({cli='orca-ide',worktree,pageId,provider=
     if(i<4)await sleep(Math.max(100,Math.min(settleMs,500)),signal);
    }
    if(state.editorText!==question)return {status:'not_sent',reason:'PROMPT_INTEGRITY_FAILED'};
+   // React can expose an accessible Send ref before the live form has
+   // committed its enabled state. Require two separate enabled observations.
+   if(provider==='chatgpt'&&typeof state.sendControlReady==='boolean'){
+    let stable=0;
+    for(let i=0;i<6;i++){
+     if(state.editorText!==question||state.generationActive)return {status:'not_sent',reason:'PROMPT_INTEGRITY_CHANGED'};
+     stable=state.sendControlReady?stable+1:0;
+     if(stable>=2)break;
+     if(i<5){await sleep(Math.max(100,Math.min(settleMs,300)),signal);state=await inspect(url,signal)}
+    }
+    if(stable<2)return {status:'not_sent',reason:'SEND_CONTROL_NOT_READY'};
+   }
    let send=null;
    if(site.sendMode==='click'){
     for(let i=0;i<5;i++){

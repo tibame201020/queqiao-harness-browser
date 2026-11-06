@@ -13,7 +13,7 @@ const destArg=args.indexOf('--dest');
 const dest=destArg>=0?args[destArg+1]:path.join(os.homedir(),'.pi','agent','extensions','queqiao-chatgpt');
 if(!path.isAbsolute(dest||''))throw Error('INVALID_INSTALL_DESTINATION');
 fs.mkdirSync(dest,{recursive:true,mode:0o700});
-const files=[['extension.mjs','index.ts'],['web-ask-core.mjs','web-ask-core.mjs'],['chatgpt-core.mjs','chatgpt-core.mjs'],['orca-cli.mjs','orca-cli.mjs'],['web-providers.mjs','web-providers.mjs'],['completion-evidence.mjs','completion-evidence.mjs'],['commands.mjs','commands.mjs']];
+const files=[['extension.mjs','index.ts'],['web-ask-core.mjs','web-ask-core.mjs'],['chatgpt-core.mjs','chatgpt-core.mjs'],['orca-cli.mjs','orca-cli.mjs'],['web-providers.mjs','web-providers.mjs'],['completion-evidence.mjs','completion-evidence.mjs'],['commands.mjs','commands.mjs'],['agent-send-guard.mjs','agent-send-guard.mjs']];
 for(const [src,target] of files){
  const out=path.join(dest,target);
  if(fs.existsSync(out)&&fs.lstatSync(out).isSymbolicLink())throw Error('INSTALL_SYMLINK_DENIED');

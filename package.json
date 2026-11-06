@@ -23,6 +23,7 @@
     "pi/orca-cli.mjs",
     "pi/web-providers.mjs",
     "pi/commands.mjs",
+    "pi/agent-send-guard.mjs",
     "pi/completion-evidence.mjs",
     "pi/install.mjs",
     "pi/install-platform.mjs",

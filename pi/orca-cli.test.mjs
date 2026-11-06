@@ -278,3 +278,33 @@ test('ChatGPT ProseMirror multiline fill preserves original paragraph newlines f
  assert.notEqual(editor.innerText,exact,'real DOM innerText adds extra paragraph newlines');
  assert.equal(state.editorText,exact,'canonical editor text must hash to the original question');
 });
+
+test('ChatGPT pre-send DOM distinguishes an enabled submit control from one still disabled after React fill',async()=>{
+ const {runInNewContext}=await import('node:vm');
+ const b={disabled:true,getAttribute:k=>({'type':'submit','aria-label':'傳送','aria-disabled':null})[k]??null,getClientRects:()=>[{}]};
+ const form={querySelectorAll:q=>q==='button[type="submit"]'?[b]:[]};
+ const editor={innerText:'Synthetic POC',textContent:'Synthetic POC',getClientRects:()=>[{}],closest:q=>q==='form'?form:null};
+ const document={querySelectorAll:q=>q.includes('contenteditable')?[editor]:[],querySelector:()=>null};
+ const inspect=()=>runInNewContext(ORCA_READONLY_INSPECT_JS,{document,location:{origin:'https://chatgpt.com',pathname:'/'}});
+ assert.equal(inspect().sendControlReady,false);
+ b.disabled=false;assert.equal(inspect().sendControlReady,true);
+});
+
+test('React disabled Send after fill must not invoke Orca click even with an exact draft',async()=>{
+ const f=stub([['tab',{tabs:[tab()]}],['eval',{url:'https://chatgpt.com/',editorText:'',generationActive:false}],
+  ['snapshot',snapshot()],['fill',{ok:true}],
+  ...Array.from({length:6},(_,i)=>['eval',{url:'https://chatgpt.com/',editorText:prompt,sendControlReady:i===5,generationActive:false}])]);
+ const r=await createOrcaCliTransport({...opts(f.run),settleMs:0}).trigger({question:prompt});
+ assert.equal(r.status,'not_sent');assert.equal(r.reason,'SEND_CONTROL_NOT_READY');assert.equal(f.calls.filter(([op])=>op==='click').length,0);
+});
+test('ChatGPT waits for two stable enabled Send observations, then clicks once only',async()=>{
+ const f=stub([['tab',{tabs:[tab()]}],['eval',{url:'https://chatgpt.com/',editorText:'',generationActive:false}],
+  ['snapshot',snapshot()],['fill',{ok:true}],
+  ['eval',{url:'https://chatgpt.com/',editorText:prompt,sendControlReady:false,generationActive:false}],
+  ['eval',{url:'https://chatgpt.com/',editorText:prompt,sendControlReady:true,generationActive:false}],
+  ['eval',{url:'https://chatgpt.com/',editorText:prompt,sendControlReady:true,generationActive:false}],
+  ['snapshot',snapshot()],['click',{clicked:true}],
+  ['tab',{tabs:[tab(chatUrl)]}],['eval',{url:chatUrl,lastUserText:prompt,userCount:1,assistantText:'',generationActive:true}]]);
+ const r=await createOrcaCliTransport({...opts(f.run),settleMs:0}).trigger({question:prompt});
+ assert.equal(r.status,'submitted');assert.equal(f.calls.filter(([op])=>op==='click').length,1);
+});
